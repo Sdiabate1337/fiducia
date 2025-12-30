@@ -195,8 +195,24 @@ func (r *Router) createPendingLine(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) getPendingLine(w http.ResponseWriter, req *http.Request) {
-	id := req.PathValue("id")
-	writeJSON(w, http.StatusOK, map[string]string{"id": id})
+	idStr := req.PathValue("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid pending line ID")
+		return
+	}
+
+	line, err := r.lineRepo.GetByID(req.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to get pending line")
+		return
+	}
+	if line == nil {
+		writeError(w, http.StatusNotFound, "Pending line not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, line)
 }
 
 func (r *Router) updatePendingLine(w http.ResponseWriter, req *http.Request) {

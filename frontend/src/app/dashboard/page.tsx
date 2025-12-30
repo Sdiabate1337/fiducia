@@ -314,9 +314,9 @@ export default function DashboardPage() {
                                         </td>
                                         <td>{getStatusBadge(line.status)}</td>
                                         <td>
-                                            <button className="btn btn-secondary" style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}>
+                                            <a href={`/pending-lines/${line.id}`} className="btn btn-secondary" style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', textDecoration: 'none' }}>
                                                 Voir
-                                            </button>
+                                            </a>
                                         </td>
                                     </tr>
                                 ))}

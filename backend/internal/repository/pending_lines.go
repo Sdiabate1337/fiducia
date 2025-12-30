@@ -39,11 +39,11 @@ type PendingLineFilter struct {
 
 // PendingLineList represents a paginated list result
 type PendingLineList struct {
-	Items      []models.PendingLine `json:"items"`
-	Total      int                  `json:"total"`
-	Limit      int                  `json:"limit"`
-	Offset     int                  `json:"offset"`
-	HasMore    bool                 `json:"has_more"`
+	Items   []models.PendingLine `json:"items"`
+	Total   int                  `json:"total"`
+	Limit   int                  `json:"limit"`
+	Offset  int                  `json:"offset"`
+	HasMore bool                 `json:"has_more"`
 }
 
 // List returns pending lines with filtering and pagination
@@ -130,7 +130,7 @@ func (r *PendingLineRepository) List(ctx context.Context, filter PendingLineFilt
 	}
 
 	// Add pagination and ordering
-	fullQuery := baseQuery + conditions + 
+	fullQuery := baseQuery + conditions +
 		" ORDER BY pl.transaction_date DESC, pl.created_at DESC" +
 		fmt.Sprintf(" LIMIT $%d OFFSET $%d", argPos, argPos+1)
 	args = append(args, filter.Limit, filter.Offset)
@@ -187,23 +187,38 @@ func (r *PendingLineRepository) GetByID(ctx context.Context, id uuid.UUID) (*mod
 			pl.id, pl.cabinet_id, pl.client_id, pl.amount, pl.transaction_date,
 			pl.bank_label, pl.account_number, pl.import_batch_id, pl.source_file,
 			pl.source_row_number, pl.status, pl.last_contacted_at, pl.contact_count,
-			pl.assigned_to, pl.created_at, pl.updated_at
+			pl.assigned_to, pl.created_at, pl.updated_at,
+			c.id as client_id, c.name as client_name, c.phone as client_phone
 		FROM pending_lines pl
+		LEFT JOIN clients c ON pl.client_id = c.id
 		WHERE pl.id = $1
 	`
 
 	var pl models.PendingLine
+	var clientID, clientName, clientPhone *string
+
 	err := r.pool.QueryRow(ctx, query, id).Scan(
 		&pl.ID, &pl.CabinetID, &pl.ClientID, &pl.Amount, &pl.TransactionDate,
 		&pl.BankLabel, &pl.AccountNumber, &pl.ImportBatchID, &pl.SourceFile,
 		&pl.SourceRowNumber, &pl.Status, &pl.LastContactedAt, &pl.ContactCount,
 		&pl.AssignedTo, &pl.CreatedAt, &pl.UpdatedAt,
+		&clientID, &clientName, &clientPhone,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pending line: %w", err)
+	}
+
+	// Attach client if present
+	if clientID != nil && clientName != nil {
+		clientUUID, _ := uuid.Parse(*clientID)
+		pl.Client = &models.Client{
+			ID:    clientUUID,
+			Name:  *clientName,
+			Phone: clientPhone,
+		}
 	}
 
 	return &pl, nil
