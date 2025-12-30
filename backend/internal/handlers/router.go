@@ -1,0 +1,405 @@
+package handlers
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"strconv"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/fiducia/backend/internal/config"
+	"github.com/fiducia/backend/internal/database"
+	"github.com/fiducia/backend/internal/repository"
+	"github.com/fiducia/backend/internal/services"
+)
+
+// Router holds dependencies for HTTP handlers
+type Router struct {
+	db       *database.DB
+	cfg      *config.Config
+	mux      *http.ServeMux
+	importer *services.CSVImporter
+	lineRepo *repository.PendingLineRepository
+}
+
+// NewRouter creates a new HTTP router with all routes
+func NewRouter(db *database.DB, cfg *config.Config) *Router {
+	r := &Router{
+		db:       db,
+		cfg:      cfg,
+		mux:      http.NewServeMux(),
+		importer: services.NewCSVImporter(),
+		lineRepo: repository.NewPendingLineRepository(db.Pool),
+	}
+
+	r.registerRoutes()
+	return r
+}
+
+// ServeHTTP implements http.Handler
+func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	r.mux.ServeHTTP(w, req)
+}
+
+// GetPool returns the database pool
+func (r *Router) GetPool() *pgxpool.Pool {
+	return r.db.Pool
+}
+
+// registerRoutes sets up all API routes
+func (r *Router) registerRoutes() {
+	// Health check
+	r.mux.HandleFunc("GET /health", r.healthCheck)
+	r.mux.HandleFunc("GET /api/v1/health", r.healthCheck)
+
+	// Cabinets
+	r.mux.HandleFunc("GET /api/v1/cabinets", r.listCabinets)
+	r.mux.HandleFunc("POST /api/v1/cabinets", r.createCabinet)
+	r.mux.HandleFunc("GET /api/v1/cabinets/{id}", r.getCabinet)
+
+	// Clients
+	r.mux.HandleFunc("GET /api/v1/cabinets/{cabinet_id}/clients", r.listClients)
+	r.mux.HandleFunc("POST /api/v1/cabinets/{cabinet_id}/clients", r.createClient)
+	r.mux.HandleFunc("GET /api/v1/clients/{id}", r.getClient)
+
+	// Pending Lines (471)
+	r.mux.HandleFunc("GET /api/v1/cabinets/{cabinet_id}/pending-lines", r.listPendingLines)
+	r.mux.HandleFunc("GET /api/v1/cabinets/{cabinet_id}/pending-lines/stats", r.getPendingLinesStats)
+	r.mux.HandleFunc("POST /api/v1/cabinets/{cabinet_id}/pending-lines", r.createPendingLine)
+	r.mux.HandleFunc("GET /api/v1/pending-lines/{id}", r.getPendingLine)
+	r.mux.HandleFunc("PATCH /api/v1/pending-lines/{id}", r.updatePendingLine)
+
+	// Import - REAL IMPLEMENTATIONS
+	r.mux.HandleFunc("POST /api/v1/cabinets/{cabinet_id}/import/preview", r.previewCSV)
+	r.mux.HandleFunc("POST /api/v1/cabinets/{cabinet_id}/import/csv", r.importCSV)
+	r.mux.HandleFunc("GET /api/v1/import/{id}/status", r.getImportStatus)
+
+	// Messages
+	r.mux.HandleFunc("GET /api/v1/pending-lines/{id}/messages", r.listMessages)
+	r.mux.HandleFunc("POST /api/v1/pending-lines/{id}/messages", r.sendMessage)
+
+	// Webhooks
+	r.mux.HandleFunc("POST /api/v1/webhook/whatsapp", r.whatsappWebhook)
+
+	// Documents
+	r.mux.HandleFunc("GET /api/v1/pending-lines/{id}/documents", r.listDocuments)
+
+	// Matching Proposals
+	r.mux.HandleFunc("GET /api/v1/cabinets/{cabinet_id}/proposals", r.listProposals)
+	r.mux.HandleFunc("POST /api/v1/proposals/{id}/approve", r.approveProposal)
+	r.mux.HandleFunc("POST /api/v1/proposals/{id}/reject", r.rejectProposal)
+
+	// Exports
+	r.mux.HandleFunc("POST /api/v1/cabinets/{cabinet_id}/exports", r.createExport)
+	r.mux.HandleFunc("GET /api/v1/exports/{id}", r.getExport)
+}
+
+// ============================================
+// HEALTH CHECK
+// ============================================
+
+func (r *Router) healthCheck(w http.ResponseWriter, req *http.Request) {
+	response := map[string]string{
+		"status":  "healthy",
+		"service": "fiducia-api",
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+// ============================================
+// CABINET HANDLERS
+// ============================================
+
+func (r *Router) listCabinets(w http.ResponseWriter, req *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"cabinets": []any{}, "total": 0})
+}
+
+func (r *Router) createCabinet(w http.ResponseWriter, req *http.Request) {
+	writeJSON(w, http.StatusCreated, map[string]string{"message": "Cabinet created"})
+}
+
+func (r *Router) getCabinet(w http.ResponseWriter, req *http.Request) {
+	id := req.PathValue("id")
+	writeJSON(w, http.StatusOK, map[string]string{"id": id})
+}
+
+// ============================================
+// CLIENT HANDLERS
+// ============================================
+
+func (r *Router) listClients(w http.ResponseWriter, req *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
+}
+
+func (r *Router) createClient(w http.ResponseWriter, req *http.Request) {
+	writeJSON(w, http.StatusCreated, map[string]string{"message": "Client created"})
+}
+
+func (r *Router) getClient(w http.ResponseWriter, req *http.Request) {
+	id := req.PathValue("id")
+	writeJSON(w, http.StatusOK, map[string]string{"id": id})
+}
+
+// ============================================
+// PENDING LINES HANDLERS
+// ============================================
+
+func (r *Router) listPendingLines(w http.ResponseWriter, req *http.Request) {
+	cabinetIDStr := req.PathValue("cabinet_id")
+	cabinetID, err := uuid.Parse(cabinetIDStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid cabinet ID")
+		return
+	}
+
+	filter := repository.PendingLineFilter{
+		CabinetID: cabinetID,
+		Limit:     50,
+	}
+
+	// Parse query params
+	if status := req.URL.Query().Get("status"); status != "" {
+		// TODO: Add status filter
+	}
+
+	result, err := r.lineRepo.List(req.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to list pending lines")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (r *Router) getPendingLinesStats(w http.ResponseWriter, req *http.Request) {
+	cabinetIDStr := req.PathValue("cabinet_id")
+	cabinetID, err := uuid.Parse(cabinetIDStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid cabinet ID")
+		return
+	}
+
+	stats, err := r.lineRepo.GetStats(req.Context(), cabinetID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to get stats")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, stats)
+}
+
+func (r *Router) createPendingLine(w http.ResponseWriter, req *http.Request) {
+	writeJSON(w, http.StatusCreated, map[string]string{"message": "Pending line created"})
+}
+
+func (r *Router) getPendingLine(w http.ResponseWriter, req *http.Request) {
+	id := req.PathValue("id")
+	writeJSON(w, http.StatusOK, map[string]string{"id": id})
+}
+
+func (r *Router) updatePendingLine(w http.ResponseWriter, req *http.Request) {
+	id := req.PathValue("id")
+	writeJSON(w, http.StatusOK, map[string]string{"id": id, "message": "Updated"})
+}
+
+// ============================================
+// IMPORT HANDLERS - REAL IMPLEMENTATION
+// ============================================
+
+func (r *Router) previewCSV(w http.ResponseWriter, req *http.Request) {
+	// Parse multipart form
+	if err := req.ParseMultipartForm(10 << 20); err != nil { // 10MB max
+		writeError(w, http.StatusBadRequest, "Invalid form data: "+err.Error())
+		return
+	}
+
+	file, header, err := req.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "No file provided")
+		return
+	}
+	defer file.Close()
+
+	// Read file content
+	data, err := io.ReadAll(file)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Failed to read file")
+		return
+	}
+
+	// Get preview rows (max 10)
+	maxRows := 10
+	if rowsParam := req.URL.Query().Get("rows"); rowsParam != "" {
+		if n, err := strconv.Atoi(rowsParam); err == nil && n > 0 && n <= 50 {
+			maxRows = n
+		}
+	}
+
+	rows, err := r.importer.PreviewCSV(data, maxRows)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Failed to parse CSV: "+err.Error())
+		return
+	}
+
+	// Detect columns from headers
+	detected := services.DetectedColumns{Confidence: 0}
+	if len(rows) > 0 {
+		detected = r.importer.DetectColumns(rows[0])
+	}
+
+	response := map[string]any{
+		"filename":   header.Filename,
+		"size":       header.Size,
+		"rows":       rows,
+		"total_rows": len(rows) - 1, // Exclude header
+		"detected":   detected,
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (r *Router) importCSV(w http.ResponseWriter, req *http.Request) {
+	cabinetIDStr := req.PathValue("cabinet_id")
+	cabinetID, err := uuid.Parse(cabinetIDStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid cabinet ID")
+		return
+	}
+
+	// Parse multipart form
+	if err := req.ParseMultipartForm(50 << 20); err != nil { // 50MB max
+		writeError(w, http.StatusBadRequest, "Invalid form data: "+err.Error())
+		return
+	}
+
+	file, header, err := req.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "No file provided")
+		return
+	}
+	defer file.Close()
+
+	// Read file content
+	data, err := io.ReadAll(file)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Failed to read file")
+		return
+	}
+
+	// Parse optional mapping from form field
+	var mapping *services.ColumnMapping
+	if mappingJSON := req.FormValue("mapping"); mappingJSON != "" {
+		if err := json.Unmarshal([]byte(mappingJSON), &mapping); err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid mapping JSON")
+			return
+		}
+	}
+
+	// Parse CSV
+	result, err := r.importer.ParseCSV(req.Context(), data, cabinetID, mapping)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Failed to parse CSV: "+err.Error())
+		return
+	}
+
+	// Set source file on all lines
+	for i := range result.Lines {
+		result.Lines[i].SourceFile = &header.Filename
+		rowNum := i + 2 // 1-indexed, skip header
+		result.Lines[i].SourceRowNumber = &rowNum
+	}
+
+	// Insert lines in batch
+	if len(result.Lines) > 0 {
+		if err := r.lineRepo.CreateBatch(req.Context(), result.Lines); err != nil {
+			writeError(w, http.StatusInternalServerError, "Failed to save pending lines: "+err.Error())
+			return
+		}
+	}
+
+	response := map[string]any{
+		"batch_id":      uuid.New().String(),
+		"total_rows":    result.TotalRows,
+		"imported_rows": result.ImportedRows,
+		"failed_rows":   result.FailedRows,
+		"errors":        result.Errors,
+	}
+
+	writeJSON(w, http.StatusCreated, response)
+}
+
+func (r *Router) getImportStatus(w http.ResponseWriter, req *http.Request) {
+	id := req.PathValue("id")
+	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "completed"})
+}
+
+// ============================================
+// MESSAGE HANDLERS
+// ============================================
+
+func (r *Router) listMessages(w http.ResponseWriter, req *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}, "total": 0})
+}
+
+func (r *Router) sendMessage(w http.ResponseWriter, req *http.Request) {
+	writeJSON(w, http.StatusCreated, map[string]string{"message": "Message queued"})
+}
+
+func (r *Router) whatsappWebhook(w http.ResponseWriter, req *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "received"})
+}
+
+// ============================================
+// DOCUMENT HANDLERS
+// ============================================
+
+func (r *Router) listDocuments(w http.ResponseWriter, req *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"documents": []any{}, "total": 0})
+}
+
+// ============================================
+// PROPOSAL HANDLERS
+// ============================================
+
+func (r *Router) listProposals(w http.ResponseWriter, req *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"proposals": []any{}, "total": 0})
+}
+
+func (r *Router) approveProposal(w http.ResponseWriter, req *http.Request) {
+	id := req.PathValue("id")
+	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "approved"})
+}
+
+func (r *Router) rejectProposal(w http.ResponseWriter, req *http.Request) {
+	id := req.PathValue("id")
+	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "rejected"})
+}
+
+// ============================================
+// EXPORT HANDLERS
+// ============================================
+
+func (r *Router) createExport(w http.ResponseWriter, req *http.Request) {
+	writeJSON(w, http.StatusAccepted, map[string]string{"message": "Export started"})
+}
+
+func (r *Router) getExport(w http.ResponseWriter, req *http.Request) {
+	id := req.PathValue("id")
+	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "ready"})
+}
+
+// ============================================
+// HELPERS
+// ============================================
+
+func writeJSON(w http.ResponseWriter, status int, data any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(data)
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
+}
