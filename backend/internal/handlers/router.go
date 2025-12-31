@@ -2,17 +2,21 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fiducia/backend/internal/config"
 	"github.com/fiducia/backend/internal/database"
+	"github.com/fiducia/backend/internal/models"
 	"github.com/fiducia/backend/internal/repository"
 	"github.com/fiducia/backend/internal/services"
+	"github.com/fiducia/backend/pkg/whatsapp"
 )
 
 // Router holds dependencies for HTTP handlers
@@ -22,6 +26,7 @@ type Router struct {
 	mux      *http.ServeMux
 	importer *services.CSVImporter
 	lineRepo *repository.PendingLineRepository
+	waClient *whatsapp.TwilioClient
 }
 
 // NewRouter creates a new HTTP router with all routes
@@ -32,6 +37,7 @@ func NewRouter(db *database.DB, cfg *config.Config) *Router {
 		mux:      http.NewServeMux(),
 		importer: services.NewCSVImporter(),
 		lineRepo: repository.NewPendingLineRepository(db.Pool),
+		waClient: whatsapp.NewTwilioClient(cfg.TwilioAccountSID, cfg.TwilioAuthToken, cfg.TwilioPhoneNumber),
 	}
 
 	r.registerRoutes()
@@ -356,11 +362,150 @@ func (r *Router) getImportStatus(w http.ResponseWriter, req *http.Request) {
 // ============================================
 
 func (r *Router) listMessages(w http.ResponseWriter, req *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}, "total": 0})
+	idStr := req.PathValue("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid pending line ID")
+		return
+	}
+
+	msgRepo := repository.NewMessageRepository(r.db.Pool)
+	messages, err := msgRepo.ListByPendingLine(req.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to list messages")
+		return
+	}
+
+	if messages == nil {
+		messages = []models.Message{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"messages": messages,
+		"total":    len(messages),
+	})
 }
 
 func (r *Router) sendMessage(w http.ResponseWriter, req *http.Request) {
-	writeJSON(w, http.StatusCreated, map[string]string{"message": "Message queued"})
+	idStr := req.PathValue("id")
+	pendingLineID, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid pending line ID")
+		return
+	}
+
+	// Parse request body
+	var body struct {
+		MessageType   string `json:"message_type"`
+		CustomMessage string `json:"custom_message"`
+		Immediate     bool   `json:"immediate"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		body.MessageType = "text"
+	}
+	if body.MessageType == "" {
+		body.MessageType = "text"
+	}
+
+	// Get pending line with client
+	line, err := r.lineRepo.GetByID(req.Context(), pendingLineID)
+	if err != nil || line == nil {
+		writeError(w, http.StatusNotFound, "Pending line not found")
+		return
+	}
+
+	// Check if client is assigned
+	if line.ClientID == nil {
+		writeError(w, http.StatusBadRequest, "No client assigned to this pending line")
+		return
+	}
+
+	// Get client
+	clientRepo := repository.NewClientRepository(r.db.Pool)
+	client, err := clientRepo.GetByID(req.Context(), *line.ClientID)
+	if err != nil || client == nil {
+		writeError(w, http.StatusBadRequest, "Client not found")
+		return
+	}
+
+	if client.Phone == nil || *client.Phone == "" {
+		writeError(w, http.StatusBadRequest, "Client has no phone number")
+		return
+	}
+
+	// Generate message content
+	content := body.CustomMessage
+	if content == "" {
+		amount := line.Amount.StringFixed(2)
+		date := line.TransactionDate.Format("02/01/2006")
+		label := "une opération"
+		if line.BankLabel != nil {
+			label = *line.BankLabel
+		}
+		content = fmt.Sprintf(
+			"Bonjour %s,\n\nNous recherchons un justificatif pour l'opération suivante :\n\n📅 Date : %s\n💰 Montant : %s €\n📝 Libellé : %s\n\nMerci de nous envoyer la pièce justificative.\n\nCordialement,\nVotre cabinet comptable",
+			client.Name, date, amount, label,
+		)
+	}
+
+	// Create message record
+	msgRepo := repository.NewMessageRepository(r.db.Pool)
+	msg := &models.Message{
+		ID:            uuid.New(),
+		PendingLineID: &pendingLineID,
+		ClientID:      line.ClientID,
+		Direction:     models.DirectionOutbound,
+		MessageType:   models.MessageType(body.MessageType),
+		Content:       &content,
+		Status:        models.MsgStatusQueued,
+	}
+
+	if err := msgRepo.Create(req.Context(), msg); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to create message: "+err.Error())
+		return
+	}
+
+	// Send via Twilio if immediate mode or in production
+	var waMessageID string
+	if body.Immediate && r.waClient != nil && r.cfg.TwilioAccountSID != "" {
+		// Update status to sending
+		msgRepo.UpdateStatus(req.Context(), msg.ID, models.MsgStatusSending, nil)
+
+		// Send via Twilio
+		resp, err := r.waClient.SendText(*client.Phone, content)
+		if err != nil {
+			// Mark as failed but don't return error - still log the message
+			errMsg := err.Error()
+			msgRepo.SetError(req.Context(), msg.ID, errMsg)
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"message": "Envoi échoué",
+				"id":      msg.ID.String(),
+				"status":  "failed",
+				"error":   errMsg,
+			})
+			return
+		}
+
+		// Update with WhatsApp message ID
+		waMessageID = resp.MessageSID
+		msgRepo.UpdateStatus(req.Context(), msg.ID, models.MsgStatusSent, &waMessageID)
+		msg.Status = models.MsgStatusSent
+	}
+
+	// Update pending line status
+	line.Status = models.StatusContacted
+	line.ContactCount++
+	now := time.Now()
+	line.LastContactedAt = &now
+	r.lineRepo.Update(req.Context(), line)
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"message":       "Relance " + string(msg.Status),
+		"id":            msg.ID.String(),
+		"status":        msg.Status,
+		"wa_message_id": waMessageID,
+		"content":       content,
+	})
 }
 
 func (r *Router) whatsappWebhook(w http.ResponseWriter, req *http.Request) {

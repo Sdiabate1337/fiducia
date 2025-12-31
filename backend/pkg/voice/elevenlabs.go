@@ -39,24 +39,24 @@ func (c *ElevenLabsClient) CloneVoice(name string, audioSample []byte) (string, 
 	// Create multipart form data
 	var body bytes.Buffer
 	boundary := "----WebKitFormBoundary7MA4YWxkTrZu0gW"
-	
+
 	// Name field
 	body.WriteString(fmt.Sprintf("--%s\r\n", boundary))
 	body.WriteString("Content-Disposition: form-data; name=\"name\"\r\n\r\n")
 	body.WriteString(name + "\r\n")
-	
+
 	// Description field
 	body.WriteString(fmt.Sprintf("--%s\r\n", boundary))
 	body.WriteString("Content-Disposition: form-data; name=\"description\"\r\n\r\n")
 	body.WriteString("Fiducia voice clone for cabinet collaborator\r\n")
-	
+
 	// Audio file
 	body.WriteString(fmt.Sprintf("--%s\r\n", boundary))
 	body.WriteString("Content-Disposition: form-data; name=\"files\"; filename=\"sample.mp3\"\r\n")
 	body.WriteString("Content-Type: audio/mpeg\r\n\r\n")
 	body.Write(audioSample)
 	body.WriteString("\r\n")
-	
+
 	body.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
 
 	req, err := http.NewRequest("POST", c.baseURL+"/voices/add", &body)
@@ -97,10 +97,10 @@ func (c *ElevenLabsClient) GenerateSpeech(voiceID, text string) ([]byte, error) 
 	payload := map[string]any{
 		"text":     text,
 		"model_id": "eleven_turbo_v2_5", // Fast French model
-		"voice_settings": map[string]float64{
-			"stability":        0.5,
-			"similarity_boost": 0.8,
-			"style":           0.0,
+		"voice_settings": map[string]any{
+			"stability":         0.5,
+			"similarity_boost":  0.8,
+			"style":             0.0,
 			"use_speaker_boost": true,
 		},
 	}
