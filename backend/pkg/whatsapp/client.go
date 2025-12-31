@@ -71,6 +71,7 @@ func (c *TwilioClient) SendVoice(to, audioURL string) (*MessageResponse, error) 
 	data.Set("To", "whatsapp:"+to)
 	data.Set("From", "whatsapp:"+c.phoneNumber)
 	data.Set("MediaUrl", audioURL)
+	data.Set("Body", "🎙️ Note vocale") // Twilio sometimes requires Body with MediaUrl
 
 	return c.makeRequest(data)
 }

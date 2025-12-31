@@ -14,6 +14,7 @@ type Config struct {
 	Port           string
 	Environment    string
 	AllowedOrigins []string
+	BaseURL        string // Public URL for media (ngrok in dev)
 
 	// Database
 	DatabaseURL string
@@ -27,7 +28,8 @@ type Config struct {
 	TwilioPhoneNumber string
 
 	// ElevenLabs
-	ElevenLabsAPIKey string
+	ElevenLabsAPIKey  string
+	ElevenLabsVoiceID string // Default voice ID for TTS
 
 	// OpenAI (GPT-4o-mini Vision)
 	OpenAIAPIKey string
@@ -39,15 +41,17 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		Port:           getEnv("PORT", "8080"),
-		Environment:    getEnv("ENVIRONMENT", "development"),
-		AllowedOrigins: strings.Split(getEnv("ALLOWED_ORIGINS", "http://localhost:3000"), ","),
-		DatabaseURL:    getEnv("DATABASE_URL", ""),
-		RedisURL:       getEnv("REDIS_URL", "redis://localhost:6379"),
+		Port:              getEnv("PORT", "8080"),
+		Environment:       getEnv("ENVIRONMENT", "development"),
+		AllowedOrigins:    strings.Split(getEnv("ALLOWED_ORIGINS", "http://localhost:3000"), ","),
+		BaseURL:           getEnv("BASE_URL", "http://localhost:8080"),
+		DatabaseURL:       getEnv("DATABASE_URL", ""),
+		RedisURL:          getEnv("REDIS_URL", "redis://localhost:6379"),
 		TwilioAccountSID:  getEnv("TWILIO_ACCOUNT_SID", ""),
 		TwilioAuthToken:   getEnv("TWILIO_AUTH_TOKEN", ""),
 		TwilioPhoneNumber: getEnv("TWILIO_PHONE_NUMBER", ""),
 		ElevenLabsAPIKey:  getEnv("ELEVENLABS_API_KEY", ""),
+		ElevenLabsVoiceID: getEnv("ELEVENLABS_VOICE_ID", ""), // Can be set after cloning
 		OpenAIAPIKey:      getEnv("OPENAI_API_KEY", ""),
 	}
 

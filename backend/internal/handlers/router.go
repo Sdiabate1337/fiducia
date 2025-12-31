@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -27,6 +29,7 @@ type Router struct {
 	importer *services.CSVImporter
 	lineRepo *repository.PendingLineRepository
 	waClient *whatsapp.TwilioClient
+	voiceSvc *services.VoiceService
 }
 
 // NewRouter creates a new HTTP router with all routes
@@ -38,6 +41,7 @@ func NewRouter(db *database.DB, cfg *config.Config) *Router {
 		importer: services.NewCSVImporter(),
 		lineRepo: repository.NewPendingLineRepository(db.Pool),
 		waClient: whatsapp.NewTwilioClient(cfg.TwilioAccountSID, cfg.TwilioAuthToken, cfg.TwilioPhoneNumber),
+		voiceSvc: services.NewVoiceService(cfg.ElevenLabsAPIKey, "/tmp/fiducia/voice", cfg.BaseURL),
 	}
 
 	r.registerRoutes()
@@ -100,6 +104,12 @@ func (r *Router) registerRoutes() {
 	// Exports
 	r.mux.HandleFunc("POST /api/v1/cabinets/{cabinet_id}/exports", r.createExport)
 	r.mux.HandleFunc("GET /api/v1/exports/{id}", r.getExport)
+
+	// Voice (Sprint 3)
+	r.mux.HandleFunc("POST /api/v1/collaborators/{id}/voice/clone", r.cloneVoice)
+	r.mux.HandleFunc("DELETE /api/v1/collaborators/{id}/voice", r.deleteVoice)
+	r.mux.HandleFunc("POST /api/v1/voice/generate", r.generateVoice)
+	r.mux.HandleFunc("GET /audio/{filename}", r.serveAudio)
 }
 
 // ============================================
@@ -467,12 +477,60 @@ func (r *Router) sendMessage(w http.ResponseWriter, req *http.Request) {
 
 	// Send via Twilio if immediate mode or in production
 	var waMessageID string
+	var audioURL string
 	if body.Immediate && r.waClient != nil && r.cfg.TwilioAccountSID != "" {
 		// Update status to sending
 		msgRepo.UpdateStatus(req.Context(), msg.ID, models.MsgStatusSending, nil)
 
-		// Send via Twilio
-		resp, err := r.waClient.SendText(*client.Phone, content)
+		var resp *whatsapp.MessageResponse
+		var err error
+
+		// Handle voice messages
+		if body.MessageType == "voice" && r.voiceSvc != nil && r.cfg.ElevenLabsAPIKey != "" {
+			// Generate voice message
+			amount := line.Amount.StringFixed(2)
+			date := line.TransactionDate.Format("02/01/2006")
+			label := "une opération"
+			if line.BankLabel != nil {
+				label = *line.BankLabel
+			}
+
+			voiceResult, voiceErr := r.voiceSvc.GenerateRelanceVoice(
+				req.Context(),
+				r.cfg.ElevenLabsVoiceID, // Default voice ID from config
+				client.Name,
+				date,
+				amount,
+				label,
+				pendingLineID,
+			)
+			if voiceErr != nil {
+				errMsg := "Voice generation failed: " + voiceErr.Error()
+				msgRepo.SetError(req.Context(), msg.ID, errMsg)
+				writeJSON(w, http.StatusCreated, map[string]any{
+					"message": "Génération vocale échouée",
+					"id":      msg.ID.String(),
+					"status":  "failed",
+					"error":   errMsg,
+				})
+				return
+			}
+
+			audioURL = voiceResult.AudioURL
+			// In development with Twilio Sandbox, MediaUrl doesn't work well
+			// Send text message instead, but keep the generated audio for future use
+			if r.cfg.IsDevelopment() {
+				// Fallback to text message in sandbox mode
+				resp, err = r.waClient.SendText(*client.Phone, content+" (🎙️ Audio: "+audioURL+")")
+			} else {
+				// In production, send voice note via Twilio
+				resp, err = r.waClient.SendVoice(*client.Phone, audioURL)
+			}
+		} else {
+			// Send text via Twilio
+			resp, err = r.waClient.SendText(*client.Phone, content)
+		}
+
 		if err != nil {
 			// Mark as failed but don't return error - still log the message
 			errMsg := err.Error()
@@ -504,6 +562,7 @@ func (r *Router) sendMessage(w http.ResponseWriter, req *http.Request) {
 		"id":            msg.ID.String(),
 		"status":        msg.Status,
 		"wa_message_id": waMessageID,
+		"audio_url":     audioURL,
 		"content":       content,
 	})
 }
@@ -549,6 +608,138 @@ func (r *Router) createExport(w http.ResponseWriter, req *http.Request) {
 func (r *Router) getExport(w http.ResponseWriter, req *http.Request) {
 	id := req.PathValue("id")
 	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "ready"})
+}
+
+// ============================================
+// VOICE HANDLERS (Sprint 3)
+// ============================================
+
+func (r *Router) cloneVoice(w http.ResponseWriter, req *http.Request) {
+	collaboratorIDStr := req.PathValue("id")
+	collaboratorID, err := uuid.Parse(collaboratorIDStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid collaborator ID")
+		return
+	}
+
+	// Parse multipart form (max 10MB audio file)
+	if err := req.ParseMultipartForm(10 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid form data: "+err.Error())
+		return
+	}
+
+	file, header, err := req.FormFile("audio")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "No audio file provided")
+		return
+	}
+	defer file.Close()
+
+	audioBytes, err := io.ReadAll(file)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Failed to read audio file")
+		return
+	}
+
+	name := req.FormValue("name")
+	if name == "" {
+		name = header.Filename
+	}
+
+	result, err := r.voiceSvc.CloneVoice(req.Context(), services.VoiceCloneRequest{
+		CollaboratorID: collaboratorID,
+		Name:           name,
+		AudioSample:    audioBytes,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to clone voice: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"voice_id": result.VoiceID,
+		"name":     result.Name,
+		"message":  "Voice cloned successfully",
+	})
+}
+
+func (r *Router) deleteVoice(w http.ResponseWriter, req *http.Request) {
+	voiceID := req.URL.Query().Get("voice_id")
+	if voiceID == "" {
+		writeError(w, http.StatusBadRequest, "voice_id is required")
+		return
+	}
+
+	if err := r.voiceSvc.DeleteVoice(req.Context(), voiceID); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to delete voice: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Voice deleted"})
+}
+
+func (r *Router) generateVoice(w http.ResponseWriter, req *http.Request) {
+	var body struct {
+		VoiceID string `json:"voice_id"`
+		Text    string `json:"text"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON")
+		return
+	}
+
+	if body.VoiceID == "" || body.Text == "" {
+		writeError(w, http.StatusBadRequest, "voice_id and text are required")
+		return
+	}
+
+	result, err := r.voiceSvc.GenerateVoiceMessage(req.Context(), services.GenerateVoiceMessageRequest{
+		VoiceID:       body.VoiceID,
+		Text:          body.Text,
+		PendingLineID: uuid.New(),
+		ConvertToOpus: true,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to generate voice: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"audio_url": result.AudioURL,
+		"format":    result.Format,
+		"size":      len(result.AudioBytes),
+	})
+}
+
+func (r *Router) serveAudio(w http.ResponseWriter, req *http.Request) {
+	filename := req.PathValue("filename")
+	if filename == "" {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	// Prevent directory traversal
+	filename = filepath.Base(filename)
+	audioPath := r.voiceSvc.GetAudioPath(filename)
+
+	// Check if file exists
+	if _, err := os.Stat(audioPath); os.IsNotExist(err) {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	// Set content type based on extension
+	ext := filepath.Ext(filename)
+	switch ext {
+	case ".ogg":
+		w.Header().Set("Content-Type", "audio/ogg")
+	case ".mp3":
+		w.Header().Set("Content-Type", "audio/mpeg")
+	default:
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+
+	http.ServeFile(w, req, audioPath)
 }
 
 // ============================================

@@ -38,6 +38,7 @@ export default function PendingLineDetailPage() {
     const [loading, setLoading] = useState(true);
     const [sending, setSending] = useState(false);
     const [customMessage, setCustomMessage] = useState('');
+    const [messageType, setMessageType] = useState<'text' | 'voice'>('text');
 
     useEffect(() => {
         fetchData();
@@ -73,7 +74,7 @@ export default function PendingLineDetailPage() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    message_type: 'text',
+                    message_type: messageType,
                     custom_message: customMessage || undefined,
                     immediate,
                 }),
@@ -190,14 +191,52 @@ export default function PendingLineDetailPage() {
                     </div>
                 ) : (
                     <>
-                        <textarea
-                            className="input"
-                            placeholder="Message personnalisé (optionnel)..."
-                            value={customMessage}
-                            onChange={(e) => setCustomMessage(e.target.value)}
-                            rows={3}
-                            style={{ marginBottom: '1rem', resize: 'vertical' }}
-                        />
+                        {/* Message Type Selector */}
+                        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+                            <button
+                                className={`btn ${messageType === 'text' ? 'btn-primary' : 'btn-secondary'}`}
+                                onClick={() => setMessageType('text')}
+                                style={{ flex: 1, padding: '0.5rem' }}
+                            >
+                                📝 Texte
+                            </button>
+                            <button
+                                className={`btn ${messageType === 'voice' ? 'btn-primary' : 'btn-secondary'}`}
+                                onClick={() => setMessageType('voice')}
+                                style={{ flex: 1, padding: '0.5rem' }}
+                            >
+                                🎙️ Note vocale
+                            </button>
+                        </div>
+
+                        {messageType === 'text' && (
+                            <textarea
+                                className="input"
+                                placeholder="Message personnalisé (optionnel)..."
+                                value={customMessage}
+                                onChange={(e) => setCustomMessage(e.target.value)}
+                                rows={3}
+                                style={{ marginBottom: '1rem', resize: 'vertical' }}
+                            />
+                        )}
+
+                        {messageType === 'voice' && (
+                            <div style={{
+                                padding: '1rem',
+                                background: 'rgba(99, 102, 241, 0.05)',
+                                borderRadius: '0.5rem',
+                                marginBottom: '1rem',
+                                textAlign: 'center'
+                            }}>
+                                <p style={{ color: '#6366f1', marginBottom: '0.5rem' }}>
+                                    🎙️ Note vocale IA
+                                </p>
+                                <p style={{ color: '#888', fontSize: '0.75rem' }}>
+                                    Le message sera généré avec la voix clonée du collaborateur
+                                </p>
+                            </div>
+                        )}
+
                         <div style={{ display: 'flex', gap: '1rem' }}>
                             <button
                                 className="btn btn-primary"
@@ -205,7 +244,7 @@ export default function PendingLineDetailPage() {
                                 disabled={sending}
                                 style={{ flex: 1 }}
                             >
-                                {sending ? '⏳ Envoi...' : '📱 Programmer avec anti-ban'}
+                                {sending ? '⏳ Envoi...' : messageType === 'voice' ? '🎙️ Générer & Programmer' : '📱 Programmer avec anti-ban'}
                             </button>
                             <button
                                 className="btn btn-secondary"
@@ -216,7 +255,9 @@ export default function PendingLineDetailPage() {
                             </button>
                         </div>
                         <p style={{ color: '#666', fontSize: '0.75rem', marginTop: '0.5rem' }}>
-                            Le mode anti-ban ajoute un délai aléatoire de 30-180 secondes
+                            {messageType === 'voice'
+                                ? 'La note vocale sera générée via ElevenLabs et convertie en OGG/Opus pour WhatsApp'
+                                : 'Le mode anti-ban ajoute un délai aléatoire de 30-180 secondes'}
                         </p>
                     </>
                 )}
