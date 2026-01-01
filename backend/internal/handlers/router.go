@@ -1,17 +1,21 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shopspring/decimal"
 
 	"github.com/fiducia/backend/internal/config"
 	"github.com/fiducia/backend/internal/database"
@@ -23,25 +27,42 @@ import (
 
 // Router holds dependencies for HTTP handlers
 type Router struct {
-	db       *database.DB
-	cfg      *config.Config
-	mux      *http.ServeMux
-	importer *services.CSVImporter
-	lineRepo *repository.PendingLineRepository
-	waClient *whatsapp.TwilioClient
-	voiceSvc *services.VoiceService
+	db          *database.DB
+	cfg         *config.Config
+	mux         *http.ServeMux
+	importer    *services.CSVImporter
+	lineRepo    *repository.PendingLineRepository
+	waClient    *whatsapp.TwilioClient
+	voiceSvc    *services.VoiceService
+	ocrSvc      *services.OCRService
+	matchingSvc *services.MatchingService
+	docRepo     *repository.DocumentRepository
+	clientRepo  *repository.ClientRepository
+	msgRepo     *repository.MessageRepository
 }
 
 // NewRouter creates a new HTTP router with all routes
 func NewRouter(db *database.DB, cfg *config.Config) *Router {
+	lineRepo := repository.NewPendingLineRepository(db.Pool)
+	docRepo := repository.NewDocumentRepository(db.Pool)
+	clientRepo := repository.NewClientRepository(db.Pool)
+	msgRepo := repository.NewMessageRepository(db.Pool)
+	ocrSvc := services.NewOCRService(cfg.OpenAIAPIKey, "/tmp/fiducia/documents")
+	matchingSvc := services.NewMatchingService(docRepo, lineRepo)
+
 	r := &Router{
-		db:       db,
-		cfg:      cfg,
-		mux:      http.NewServeMux(),
-		importer: services.NewCSVImporter(),
-		lineRepo: repository.NewPendingLineRepository(db.Pool),
-		waClient: whatsapp.NewTwilioClient(cfg.TwilioAccountSID, cfg.TwilioAuthToken, cfg.TwilioPhoneNumber),
-		voiceSvc: services.NewVoiceService(cfg.ElevenLabsAPIKey, "/tmp/fiducia/voice", cfg.BaseURL),
+		db:          db,
+		cfg:         cfg,
+		mux:         http.NewServeMux(),
+		importer:    services.NewCSVImporter(),
+		lineRepo:    lineRepo,
+		waClient:    whatsapp.NewTwilioClient(cfg.TwilioAccountSID, cfg.TwilioAuthToken, cfg.TwilioPhoneNumber),
+		voiceSvc:    services.NewVoiceService(cfg.ElevenLabsAPIKey, "/tmp/fiducia/voice", cfg.BaseURL),
+		ocrSvc:      ocrSvc,
+		matchingSvc: matchingSvc,
+		docRepo:     docRepo,
+		clientRepo:  clientRepo,
+		msgRepo:     msgRepo,
 	}
 
 	r.registerRoutes()
@@ -90,8 +111,9 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("GET /api/v1/pending-lines/{id}/messages", r.listMessages)
 	r.mux.HandleFunc("POST /api/v1/pending-lines/{id}/messages", r.sendMessage)
 
-	// Webhooks
+	// Webhooks (both with and without api prefix for Twilio convenience)
 	r.mux.HandleFunc("POST /api/v1/webhook/whatsapp", r.whatsappWebhook)
+	r.mux.HandleFunc("POST /webhook/whatsapp", r.whatsappWebhook)
 
 	// Documents
 	r.mux.HandleFunc("GET /api/v1/pending-lines/{id}/documents", r.listDocuments)
@@ -568,7 +590,121 @@ func (r *Router) sendMessage(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) whatsappWebhook(w http.ResponseWriter, req *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "received"})
+	// Parse form data
+	if err := req.ParseForm(); err != nil {
+		slog.Error("failed to parse webhook form", "error", err)
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	// Extract Twilio payload
+	messageSid := req.FormValue("MessageSid")
+	from := strings.TrimPrefix(req.FormValue("From"), "whatsapp:")
+	body := req.FormValue("Body")
+	numMedia := req.FormValue("NumMedia")
+	mediaUrl0 := req.FormValue("MediaUrl0")
+	mediaType0 := req.FormValue("MediaContentType0")
+
+	slog.Info("received WhatsApp webhook",
+		"message_sid", messageSid,
+		"from", from,
+		"body_length", len(body),
+		"num_media", numMedia,
+	)
+
+	// Find client by phone
+	client, _ := r.clientRepo.GetByPhoneGlobal(req.Context(), from)
+	var clientID *uuid.UUID
+	if client != nil {
+		clientID = &client.ID
+	}
+
+	// Save incoming message
+	waID := messageSid
+	msg := &models.Message{
+		ClientID:    clientID,
+		Direction:   models.DirectionInbound,
+		MessageType: models.TypeText,
+		Content:     &body,
+		Status:      models.MsgStatusDelivered,
+		WAMessageID: &waID,
+	}
+
+	if numMedia != "0" && numMedia != "" {
+		msg.MessageType = models.TypeMedia
+		msg.MediaURL = &mediaUrl0
+	}
+
+	if err := r.msgRepo.Create(req.Context(), msg); err != nil {
+		slog.Error("failed to save incoming message", "error", err)
+	}
+
+	// Process media if present (use background context for async processing)
+	if numMedia != "0" && numMedia != "" && mediaUrl0 != "" {
+		go r.processIncomingMedia(context.Background(), mediaUrl0, mediaType0, clientID, msg.ID)
+	}
+
+	// Respond with TwiML
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><Response></Response>`)
+}
+
+// processIncomingMedia handles OCR processing in background
+func (r *Router) processIncomingMedia(ctx context.Context, mediaURL, mediaType string, clientID *uuid.UUID, messageID uuid.UUID) {
+	slog.Info("processing incoming media", "url", mediaURL, "type", mediaType)
+
+	// Download and process with OCR
+	ocrResult, filePath, err := r.ocrSvc.DownloadAndProcess(
+		ctx,
+		mediaURL,
+		r.cfg.TwilioAccountSID,
+		r.cfg.TwilioAuthToken,
+	)
+
+	// Create document record
+	doc := &repository.Document{
+		ClientID:        clientID,
+		MessageID:       &messageID,
+		FilePath:        filePath,
+		FileType:        &mediaType,
+		TwilioMediaURL:  &mediaURL,
+		MatchConfidence: decimal.Zero,
+		MatchStatus:     "pending",
+	}
+
+	if err != nil {
+		slog.Error("OCR processing failed", "error", err)
+		doc.OCRStatus = "failed"
+		errStr := err.Error()
+		doc.OCRError = &errStr
+	} else {
+		doc.OCRStatus = "completed"
+		doc.OCRText = &ocrResult.RawText
+		doc.OCRData = ocrResult.ExtractedData
+		slog.Info("OCR completed", "text_length", len(ocrResult.RawText), "doc_type", ocrResult.DocumentType)
+	}
+
+	if err := r.docRepo.Create(ctx, doc); err != nil {
+		slog.Error("failed to save document", "error", err)
+		return
+	}
+
+	slog.Info("document saved", "doc_id", doc.ID, "ocr_status", doc.OCRStatus)
+
+	// Auto-match if OCR succeeded
+	if doc.OCRStatus == "completed" && clientID != nil {
+		proposal, err := r.matchingSvc.AutoMatch(ctx, doc)
+		if err != nil {
+			slog.Error("auto-match failed", "error", err)
+		} else if proposal != nil {
+			slog.Info("match proposal created",
+				"doc_id", doc.ID,
+				"line_id", proposal.PendingLineID,
+				"confidence", proposal.Confidence,
+			)
+		}
+	}
 }
 
 // ============================================

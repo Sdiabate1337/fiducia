@@ -165,6 +165,33 @@ func (r *ClientRepository) GetByPhone(ctx context.Context, cabinetID uuid.UUID, 
 	return &c, nil
 }
 
+// GetByPhoneGlobal returns a client by phone number across all cabinets
+func (r *ClientRepository) GetByPhoneGlobal(ctx context.Context, phone string) (*models.Client, error) {
+	query := `
+		SELECT id, cabinet_id, name, siren, siret, phone, email,
+			   contact_name, address, notes, whatsapp_opted_in,
+			   whatsapp_opted_in_at, created_at, updated_at
+		FROM clients
+		WHERE phone = $1
+		LIMIT 1
+	`
+
+	var c models.Client
+	err := r.pool.QueryRow(ctx, query, phone).Scan(
+		&c.ID, &c.CabinetID, &c.Name, &c.SIREN, &c.SIRET,
+		&c.Phone, &c.Email, &c.ContactName, &c.Address, &c.Notes,
+		&c.WhatsAppOptedIn, &c.WhatsAppOptedInAt, &c.CreatedAt, &c.UpdatedAt,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get client by phone: %w", err)
+	}
+
+	return &c, nil
+}
+
 // Create inserts a new client
 func (r *ClientRepository) Create(ctx context.Context, c *models.Client) error {
 	query := `

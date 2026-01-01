@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,19 +10,52 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shopspring/decimal"
+
 	"github.com/fiducia/backend/internal/config"
+	"github.com/fiducia/backend/internal/models"
+	"github.com/fiducia/backend/internal/repository"
+	"github.com/fiducia/backend/internal/services"
 )
 
 // WebhookHandler handles incoming WhatsApp webhooks
 type WebhookHandler struct {
-	cfg *config.Config
+	cfg         *config.Config
+	pool        *pgxpool.Pool
+	ocrSvc      *services.OCRService
+	matchingSvc *services.MatchingService
+	docRepo     *repository.DocumentRepository
+	clientRepo  *repository.ClientRepository
+	msgRepo     *repository.MessageRepository
+	lineRepo    *repository.PendingLineRepository
 }
 
 // NewWebhookHandler creates a new webhook handler
-func NewWebhookHandler(cfg *config.Config) *WebhookHandler {
-	return &WebhookHandler{cfg: cfg}
+func NewWebhookHandler(
+	cfg *config.Config,
+	pool *pgxpool.Pool,
+	ocrSvc *services.OCRService,
+	matchingSvc *services.MatchingService,
+	docRepo *repository.DocumentRepository,
+	clientRepo *repository.ClientRepository,
+	msgRepo *repository.MessageRepository,
+	lineRepo *repository.PendingLineRepository,
+) *WebhookHandler {
+	return &WebhookHandler{
+		cfg:         cfg,
+		pool:        pool,
+		ocrSvc:      ocrSvc,
+		matchingSvc: matchingSvc,
+		docRepo:     docRepo,
+		clientRepo:  clientRepo,
+		msgRepo:     msgRepo,
+		lineRepo:    lineRepo,
+	}
 }
 
 // TwilioWebhookPayload represents the Twilio webhook payload
@@ -86,11 +120,35 @@ func (h *WebhookHandler) HandleIncoming(w http.ResponseWriter, r *http.Request) 
 	// Clean phone number (remove whatsapp: prefix)
 	from := strings.TrimPrefix(payload.From, "whatsapp:")
 
-	// TODO: Process incoming message
-	// 1. Find client by phone number
-	// 2. Find related pending lines
-	// 3. Save message to database
-	// 4. If media attached, trigger OCR processing
+	// Find client by phone number
+	client, err := h.clientRepo.GetByPhoneGlobal(r.Context(), from)
+	if err != nil {
+		slog.Warn("client not found for phone", "phone", from, "error", err)
+	}
+
+	var clientID *uuid.UUID
+	if client != nil {
+		clientID = &client.ID
+	}
+
+	// Save incoming message to database
+	waMessageID := payload.MessageSid
+	msg := &models.Message{
+		ClientID:    clientID,
+		Direction:   models.DirectionInbound,
+		MessageType: models.TypeText,
+		Content:     &payload.Body,
+		Status:      models.MsgStatusDelivered,
+		WAMessageID: &waMessageID,
+	}
+
+	if payload.NumMedia != "0" {
+		msg.MessageType = models.TypeMedia
+	}
+
+	if err := h.msgRepo.Create(r.Context(), msg); err != nil {
+		slog.Error("failed to save incoming message", "error", err)
+	}
 
 	// Handle media if present
 	if payload.NumMedia != "0" && payload.MediaUrl0 != "" {
@@ -98,7 +156,9 @@ func (h *WebhookHandler) HandleIncoming(w http.ResponseWriter, r *http.Request) 
 			"content_type", payload.MediaContentType0,
 			"url", payload.MediaUrl0,
 		)
-		// TODO: Download media and process with OCR
+
+		// Process media asynchronously
+		go h.processMedia(r.Context(), payload, clientID, msg.ID)
 	}
 
 	// Acknowledge receipt (Twilio expects 200 OK)
@@ -112,6 +172,64 @@ func (h *WebhookHandler) HandleIncoming(w http.ResponseWriter, r *http.Request) 
 		"from", from,
 		"message_id", payload.MessageSid,
 	)
+}
+
+// processMedia downloads and processes media with OCR
+func (h *WebhookHandler) processMedia(ctx context.Context, payload TwilioWebhookPayload, clientID *uuid.UUID, messageID uuid.UUID) {
+	// Download from Twilio and process with OCR
+	ocrResult, filePath, err := h.ocrSvc.DownloadAndProcess(
+		ctx,
+		payload.MediaUrl0,
+		h.cfg.TwilioAccountSID,
+		h.cfg.TwilioAuthToken,
+	)
+
+	// Create document record
+	doc := &repository.Document{
+		ClientID:        clientID,
+		MessageID:       &messageID,
+		FilePath:        filePath,
+		FileName:        strPtr(filepath.Base(filePath)),
+		FileType:        strPtr(payload.MediaContentType0),
+		TwilioMediaURL:  strPtr(payload.MediaUrl0),
+		MatchConfidence: decimal.Zero,
+		MatchStatus:     "pending",
+	}
+
+	if err != nil {
+		slog.Error("OCR processing failed", "error", err)
+		doc.OCRStatus = "failed"
+		doc.OCRError = strPtr(err.Error())
+	} else {
+		doc.OCRStatus = "completed"
+		doc.OCRText = strPtr(ocrResult.RawText)
+		doc.OCRData = ocrResult.ExtractedData
+	}
+
+	if err := h.docRepo.Create(ctx, doc); err != nil {
+		slog.Error("failed to save document", "error", err)
+		return
+	}
+
+	slog.Info("document saved",
+		"doc_id", doc.ID,
+		"ocr_status", doc.OCRStatus,
+		"client_id", clientID,
+	)
+
+	// If OCR succeeded, attempt auto-matching
+	if doc.OCRStatus == "completed" && clientID != nil {
+		proposal, err := h.matchingSvc.AutoMatch(ctx, doc)
+		if err != nil {
+			slog.Error("auto-match failed", "error", err)
+		} else if proposal != nil {
+			slog.Info("match proposal created",
+				"doc_id", doc.ID,
+				"line_id", proposal.PendingLineID,
+				"confidence", proposal.Confidence,
+			)
+		}
+	}
 }
 
 // HandleStatusCallback handles message status updates
@@ -144,8 +262,29 @@ func (h *WebhookHandler) HandleStatusCallback(w http.ResponseWriter, r *http.Req
 		"error_code", payload.ErrorCode,
 	)
 
-	// TODO: Update message status in database
-	// - queued, sending, sent, delivered, read, failed
+	// Map Twilio status to our status
+	var status models.MessageStatus
+	switch payload.MessageStatus {
+	case "queued":
+		status = models.MsgStatusQueued
+	case "sending":
+		status = models.MsgStatusSending
+	case "sent":
+		status = models.MsgStatusSent
+	case "delivered":
+		status = models.MsgStatusDelivered
+	case "read":
+		status = models.MsgStatusRead
+	case "failed", "undelivered":
+		status = models.MsgStatusFailed
+	default:
+		status = models.MsgStatusQueued
+	}
+
+	// Update message status in database
+	if err := h.msgRepo.UpdateStatusByWAID(r.Context(), payload.MessageSid, status); err != nil {
+		slog.Error("failed to update message status", "error", err)
+	}
 
 	// Acknowledge
 	w.WriteHeader(http.StatusOK)
@@ -213,4 +352,8 @@ func (h *WebhookHandler) HandleIncomingJSON(w http.ResponseWriter, r *http.Reque
 		Success: true,
 		Message: "Webhook received",
 	})
+}
+
+func strPtr(s string) *string {
+	return &s
 }

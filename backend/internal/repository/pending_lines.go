@@ -400,3 +400,39 @@ func (r *PendingLineRepository) GetStats(ctx context.Context, cabinetID uuid.UUI
 		"validated_amount": validatedAmount,
 	}, nil
 }
+
+// ListByClient returns all pending lines for a specific client
+func (r *PendingLineRepository) ListByClient(ctx context.Context, clientID uuid.UUID) ([]*models.PendingLine, error) {
+	query := `
+		SELECT 
+			id, cabinet_id, client_id, amount, transaction_date,
+			bank_label, account_number, import_batch_id, source_file,
+			source_row_number, status, last_contacted_at, contact_count,
+			assigned_to, created_at, updated_at
+		FROM pending_lines
+		WHERE client_id = $1
+		ORDER BY transaction_date DESC
+	`
+
+	rows, err := r.pool.Query(ctx, query, clientID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list by client: %w", err)
+	}
+	defer rows.Close()
+
+	var lines []*models.PendingLine
+	for rows.Next() {
+		var pl models.PendingLine
+		if err := rows.Scan(
+			&pl.ID, &pl.CabinetID, &pl.ClientID, &pl.Amount, &pl.TransactionDate,
+			&pl.BankLabel, &pl.AccountNumber, &pl.ImportBatchID, &pl.SourceFile,
+			&pl.SourceRowNumber, &pl.Status, &pl.LastContactedAt, &pl.ContactCount,
+			&pl.AssignedTo, &pl.CreatedAt, &pl.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan row: %w", err)
+		}
+		lines = append(lines, &pl)
+	}
+
+	return lines, nil
+}
