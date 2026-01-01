@@ -140,6 +140,13 @@ func (s *MatchingService) AutoMatch(ctx context.Context, doc *repository.Documen
 		return nil, err
 	}
 
+	// Update pending line status to received (document received, waiting validation)
+	line, _ := s.lineRepo.GetByID(ctx, best.PendingLineID)
+	if line != nil && (line.Status == models.StatusPending || line.Status == models.StatusContacted) {
+		line.Status = models.StatusReceived
+		s.lineRepo.Update(ctx, line)
+	}
+
 	return &best, nil
 }
 

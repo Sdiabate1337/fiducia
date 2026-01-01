@@ -28,6 +28,25 @@ interface PendingLine {
     };
 }
 
+interface Document {
+    id: string;
+    file_path: string;
+    file_type: string | null;
+    ocr_status: string;
+    ocr_text: string | null;
+    ocr_data: {
+        date?: string;
+        amount?: number;
+        vendor?: string;
+        invoice_number?: string;
+        document_type?: string;
+        confidence?: number;
+    } | null;
+    match_confidence: string;
+    match_status: string;
+    created_at: string;
+}
+
 export default function PendingLineDetailPage() {
     const params = useParams();
     const router = useRouter();
@@ -35,6 +54,7 @@ export default function PendingLineDetailPage() {
 
     const [line, setLine] = useState<PendingLine | null>(null);
     const [messages, setMessages] = useState<Message[]>([]);
+    const [documents, setDocuments] = useState<Document[]>([]);
     const [loading, setLoading] = useState(true);
     const [sending, setSending] = useState(false);
     const [customMessage, setCustomMessage] = useState('');
@@ -60,10 +80,35 @@ export default function PendingLineDetailPage() {
                 const msgData = await msgRes.json();
                 setMessages(msgData.messages || []);
             }
+
+            // Fetch documents
+            const docRes = await fetch(`/api/v1/pending-lines/${id}/documents`);
+            if (docRes.ok) {
+                const docData = await docRes.json();
+                setDocuments(docData.documents || []);
+            }
         } catch (err) {
             console.error('Failed to fetch data:', err);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const approveDocument = async (docId: string) => {
+        try {
+            const res = await fetch(`/api/v1/documents/${docId}/approve`, {
+                method: 'POST',
+            });
+
+            if (res.ok) {
+                alert('Document validé ! La ligne 471 est maintenant marquée comme validée.');
+                fetchData(); // Refresh
+            } else {
+                const err = await res.json();
+                alert('Erreur: ' + (err.error || 'Échec de la validation'));
+            }
+        } catch (err) {
+            alert('Erreur réseau');
         }
     };
 
@@ -303,6 +348,100 @@ export default function PendingLineDetailPage() {
                     </div>
                 )}
             </div>
+
+            {/* Documents Received */}
+            {documents.length > 0 && (
+                <div className="card" style={{ marginTop: '1.5rem' }}>
+                    <h3 style={{ fontSize: '1rem', marginBottom: '1rem' }}>
+                        📄 Documents reçus ({documents.length})
+                    </h3>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                        {documents.map((doc) => (
+                            <div
+                                key={doc.id}
+                                style={{
+                                    padding: '1rem',
+                                    borderRadius: '0.5rem',
+                                    background: 'rgba(34, 197, 94, 0.1)',
+                                    border: '1px solid rgba(34, 197, 94, 0.3)',
+                                }}
+                            >
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                                    <span style={{ fontWeight: 600 }}>
+                                        {doc.ocr_data?.document_type === 'invoice' ? '🧾 Facture' : '📄 Document'}
+                                    </span>
+                                    <span className={`badge ${doc.ocr_status === 'completed' ? 'badge-success' : 'badge-pending'}`}>
+                                        {doc.ocr_status === 'completed' ? '✓ OCR OK' : '⏳ En cours'}
+                                    </span>
+                                </div>
+
+                                {doc.ocr_data && (
+                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                                        {doc.ocr_data.date && (
+                                            <div>
+                                                <span style={{ color: '#888', fontSize: '0.75rem' }}>Date: </span>
+                                                <span>{doc.ocr_data.date}</span>
+                                            </div>
+                                        )}
+                                        {doc.ocr_data.amount && (
+                                            <div>
+                                                <span style={{ color: '#888', fontSize: '0.75rem' }}>Montant: </span>
+                                                <span style={{ fontWeight: 600 }}>{doc.ocr_data.amount} €</span>
+                                            </div>
+                                        )}
+                                        {doc.ocr_data.vendor && (
+                                            <div>
+                                                <span style={{ color: '#888', fontSize: '0.75rem' }}>Fournisseur: </span>
+                                                <span>{doc.ocr_data.vendor}</span>
+                                            </div>
+                                        )}
+                                        {doc.ocr_data.invoice_number && (
+                                            <div>
+                                                <span style={{ color: '#888', fontSize: '0.75rem' }}>N° Facture: </span>
+                                                <span>{doc.ocr_data.invoice_number}</span>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* Match Info */}
+                                <div style={{
+                                    marginTop: '0.5rem',
+                                    padding: '0.5rem',
+                                    background: 'rgba(99, 102, 241, 0.1)',
+                                    borderRadius: '0.25rem',
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center'
+                                }}>
+                                    <div>
+                                        <span style={{ color: '#888', fontSize: '0.75rem' }}>Confiance matching: </span>
+                                        <span style={{ fontWeight: 600, color: parseFloat(doc.match_confidence) >= 0.8 ? '#22c55e' : '#f59e0b' }}>
+                                            {(parseFloat(doc.match_confidence) * 100).toFixed(0)}%
+                                        </span>
+                                    </div>
+                                    {doc.match_status === 'pending' && parseFloat(doc.match_confidence) >= 0.5 && (
+                                        <button
+                                            className="btn btn-primary"
+                                            style={{ fontSize: '0.75rem', padding: '0.25rem 0.75rem' }}
+                                            onClick={() => approveDocument(doc.id)}
+                                        >
+                                            ✓ Valider
+                                        </button>
+                                    )}
+                                    {doc.match_status === 'auto_matched' && (
+                                        <span className="badge badge-success">Auto-validé</span>
+                                    )}
+                                </div>
+
+                                <div style={{ color: '#666', fontSize: '0.7rem', marginTop: '0.5rem' }}>
+                                    Reçu le {formatDate(doc.created_at)}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
         </main>
     );
 }

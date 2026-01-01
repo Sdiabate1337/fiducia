@@ -117,6 +117,8 @@ func (r *Router) registerRoutes() {
 
 	// Documents
 	r.mux.HandleFunc("GET /api/v1/pending-lines/{id}/documents", r.listDocuments)
+	r.mux.HandleFunc("POST /api/v1/documents/{id}/approve", r.approveDocument)
+	r.mux.HandleFunc("POST /api/v1/documents/{id}/reject", r.rejectDocument)
 
 	// Matching Proposals
 	r.mux.HandleFunc("GET /api/v1/cabinets/{cabinet_id}/proposals", r.listProposals)
@@ -572,8 +574,10 @@ func (r *Router) sendMessage(w http.ResponseWriter, req *http.Request) {
 		msg.Status = models.MsgStatusSent
 	}
 
-	// Update pending line status
-	line.Status = models.StatusContacted
+	// Update pending line status (only if not already in later state)
+	if line.Status == models.StatusPending {
+		line.Status = models.StatusContacted
+	}
 	line.ContactCount++
 	now := time.Now()
 	line.LastContactedAt = &now
@@ -712,7 +716,110 @@ func (r *Router) processIncomingMedia(ctx context.Context, mediaURL, mediaType s
 // ============================================
 
 func (r *Router) listDocuments(w http.ResponseWriter, req *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"documents": []any{}, "total": 0})
+	pendingLineID := req.PathValue("id")
+	id, err := uuid.Parse(pendingLineID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid pending line ID")
+		return
+	}
+
+	docs, err := r.docRepo.GetByPendingLine(req.Context(), id)
+	if err != nil {
+		slog.Error("failed to list documents", "error", err)
+		writeError(w, http.StatusInternalServerError, "Failed to fetch documents")
+		return
+	}
+
+	// Transform to API response
+	result := make([]map[string]any, 0, len(docs))
+	for _, doc := range docs {
+		item := map[string]any{
+			"id":               doc.ID.String(),
+			"file_path":        doc.FilePath,
+			"file_type":        doc.FileType,
+			"ocr_status":       doc.OCRStatus,
+			"ocr_text":         doc.OCRText,
+			"ocr_data":         doc.OCRData,
+			"match_confidence": doc.MatchConfidence,
+			"match_status":     doc.MatchStatus,
+			"created_at":       doc.CreatedAt,
+		}
+		result = append(result, item)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"documents": result,
+		"total":     len(result),
+	})
+}
+
+func (r *Router) approveDocument(w http.ResponseWriter, req *http.Request) {
+	docID := req.PathValue("id")
+	id, err := uuid.Parse(docID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid document ID")
+		return
+	}
+
+	// Get document
+	doc, err := r.docRepo.GetByID(req.Context(), id)
+	if err != nil || doc == nil {
+		writeError(w, http.StatusNotFound, "Document not found")
+		return
+	}
+
+	// Approve the match
+	if err := r.docRepo.ApproveMatch(req.Context(), id, nil); err != nil {
+		slog.Error("failed to approve document", "error", err)
+		writeError(w, http.StatusInternalServerError, "Failed to approve")
+		return
+	}
+
+	// Update pending line status if linked
+	if doc.PendingLineID != nil {
+		line, _ := r.lineRepo.GetByID(req.Context(), *doc.PendingLineID)
+		if line != nil {
+			line.Status = models.StatusValidated
+			r.lineRepo.Update(req.Context(), line)
+		}
+	}
+
+	slog.Info("document approved", "doc_id", id, "pending_line_id", doc.PendingLineID)
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"id":     docID,
+		"status": "approved",
+	})
+}
+
+func (r *Router) rejectDocument(w http.ResponseWriter, req *http.Request) {
+	docID := req.PathValue("id")
+	id, err := uuid.Parse(docID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid document ID")
+		return
+	}
+
+	// Get document
+	doc, err := r.docRepo.GetByID(req.Context(), id)
+	if err != nil || doc == nil {
+		writeError(w, http.StatusNotFound, "Document not found")
+		return
+	}
+
+	// Reject the match
+	if err := r.docRepo.RejectMatch(req.Context(), id, nil); err != nil {
+		slog.Error("failed to reject document", "error", err)
+		writeError(w, http.StatusInternalServerError, "Failed to reject")
+		return
+	}
+
+	slog.Info("document rejected", "doc_id", id)
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"id":     docID,
+		"status": "rejected",
+	})
 }
 
 // ============================================
