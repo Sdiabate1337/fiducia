@@ -39,6 +39,7 @@ type Router struct {
 	docRepo     *repository.DocumentRepository
 	clientRepo  *repository.ClientRepository
 	msgRepo     *repository.MessageRepository
+	voiceRepo   *repository.VoiceSettingsRepository
 }
 
 // NewRouter creates a new HTTP router with all routes
@@ -63,6 +64,7 @@ func NewRouter(db *database.DB, cfg *config.Config) *Router {
 		docRepo:     docRepo,
 		clientRepo:  clientRepo,
 		msgRepo:     msgRepo,
+		voiceRepo:   repository.NewVoiceSettingsRepository(db.Pool),
 	}
 
 	r.registerRoutes()
@@ -519,9 +521,19 @@ func (r *Router) sendMessage(w http.ResponseWriter, req *http.Request) {
 				label = *line.BankLabel
 			}
 
+			// Determine Voice ID (use cloned voice if available)
+			voiceID := r.cfg.ElevenLabsVoiceID // Default
+
+			// For this MVP, we use the test collaborator ID used in frontend
+			testCollaboratorID, _ := uuid.Parse("22222222-2222-2222-2222-222222222222")
+			if voiceSetting, _ := r.voiceRepo.GetByCollaboratorID(req.Context(), testCollaboratorID); voiceSetting != nil {
+				voiceID = voiceSetting.VoiceID
+				slog.Info("using cloned voice", "voice_id", voiceID, "name", voiceSetting.Name)
+			}
+
 			voiceResult, voiceErr := r.voiceSvc.GenerateRelanceVoice(
 				req.Context(),
-				r.cfg.ElevenLabsVoiceID, // Default voice ID from config
+				voiceID, // Use determined voice ID
 				client.Name,
 				date,
 				amount,
@@ -897,6 +909,17 @@ func (r *Router) cloneVoice(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to clone voice: "+err.Error())
 		return
+	}
+
+	// Save to database
+	setting := &repository.VoiceSetting{
+		CollaboratorID: collaboratorID,
+		VoiceID:        result.VoiceID,
+		Name:           result.Name,
+	}
+	if err := r.voiceRepo.Create(req.Context(), setting); err != nil {
+		slog.Error("failed to save voice setting", "error", err)
+		// Don't fail request, just log error
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{

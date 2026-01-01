@@ -122,9 +122,14 @@ export default function DashboardPage() {
                         Dashboard
                     </h1>
                 </div>
-                <a href="/import" className="btn btn-primary">
-                    📤 Importer CSV
-                </a>
+                <div style={{ display: 'flex', gap: '1rem' }}>
+                    <a href="/settings" className="btn btn-secondary">
+                        ⚙️ Paramètres
+                    </a>
+                    <a href="/import" className="btn btn-primary">
+                        📤 Importer CSV
+                    </a>
+                </div>
             </div>
 
             {/* Stats Cards */}
