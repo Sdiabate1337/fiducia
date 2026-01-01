@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -136,6 +137,10 @@ func (r *PendingLineRepository) List(ctx context.Context, filter PendingLineFilt
 	args = append(args, filter.Limit, filter.Offset)
 
 	// Execute query
+	// DEBUG: Log query to file
+	debugMsg := fmt.Sprintf("Query: %s\nArgs: %v\n", fullQuery, args)
+	_ = os.WriteFile("/tmp/query_debug.txt", []byte(debugMsg), 0644)
+
 	rows, err := r.pool.Query(ctx, fullQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query pending lines: %w", err)

@@ -136,6 +136,7 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("DELETE /api/v1/collaborators/{id}/voice", r.deleteVoice)
 	r.mux.HandleFunc("POST /api/v1/voice/generate", r.generateVoice)
 	r.mux.HandleFunc("GET /audio/{filename}", r.serveAudio)
+	r.mux.HandleFunc("GET /api/v1/documents/content/{filename}", r.serveDocument)
 }
 
 // ============================================
@@ -1006,6 +1007,39 @@ func (r *Router) serveAudio(w http.ResponseWriter, req *http.Request) {
 	}
 
 	http.ServeFile(w, req, audioPath)
+}
+
+func (r *Router) serveDocument(w http.ResponseWriter, req *http.Request) {
+	filename := req.PathValue("filename")
+	if filename == "" {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	// Prevent directory traversal
+	filename = filepath.Base(filename)
+	docPath := filepath.Join("/tmp/fiducia/documents", filename)
+
+	// Check if file exists
+	if _, err := os.Stat(docPath); os.IsNotExist(err) {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	// Set content type based on extension
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".jpg", ".jpeg":
+		w.Header().Set("Content-Type", "image/jpeg")
+	case ".png":
+		w.Header().Set("Content-Type", "image/png")
+	case ".pdf":
+		w.Header().Set("Content-Type", "application/pdf")
+	default:
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+
+	http.ServeFile(w, req, docPath)
 }
 
 // ============================================

@@ -1,28 +1,30 @@
 'use client';
 
 import { useState, useRef } from 'react';
-
-const CABINET_ID = '11111111-1111-1111-1111-111111111111'; // Test cabinet
-
-interface Voice {
-    id: string;
-    name: string;
-    voice_id: string;
-    created_at: string;
-}
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+    Mic, Upload, Play, Square, Trash2, ArrowLeft,
+    CheckCircle2, AlertTriangle, Speaker, Fingerprint,
+    Waveform, Lock, Clock, StopCircle
+} from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 
 export default function SettingsPage() {
+    const router = useRouter();
     const [isRecording, setIsRecording] = useState(false);
     const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
     const [audioUrl, setAudioUrl] = useState<string | null>(null);
     const [voiceName, setVoiceName] = useState('');
     const [uploading, setUploading] = useState(false);
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-    const [voices, setVoices] = useState<Voice[]>([]);
 
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const chunksRef = useRef<Blob[]>([]);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const audioRef = useRef<HTMLAudioElement>(null);
+    const [isPlaying, setIsPlaying] = useState(false);
 
     const startRecording = async () => {
         try {
@@ -32,9 +34,7 @@ export default function SettingsPage() {
             chunksRef.current = [];
 
             mediaRecorder.ondataavailable = (e) => {
-                if (e.data.size > 0) {
-                    chunksRef.current.push(e.data);
-                }
+                if (e.data.size > 0) chunksRef.current.push(e.data);
             };
 
             mediaRecorder.onstop = () => {
@@ -47,7 +47,7 @@ export default function SettingsPage() {
             mediaRecorder.start();
             setIsRecording(true);
         } catch (err) {
-            setMessage({ type: 'error', text: 'Erreur accès microphone. Vérifiez les permissions.' });
+            setMessage({ type: 'error', text: 'Accès micro refusé' });
         }
     };
 
@@ -69,16 +69,22 @@ export default function SettingsPage() {
     const clearAudio = () => {
         setAudioBlob(null);
         setAudioUrl(null);
-        if (fileInputRef.current) {
-            fileInputRef.current.value = '';
+        if (fileInputRef.current) fileInputRef.current.value = '';
+    };
+
+    const togglePlay = () => {
+        if (audioRef.current) {
+            if (isPlaying) {
+                audioRef.current.pause();
+            } else {
+                audioRef.current.play();
+            }
+            setIsPlaying(!isPlaying);
         }
     };
 
     const uploadVoice = async () => {
-        if (!audioBlob || !voiceName.trim()) {
-            setMessage({ type: 'error', text: 'Veuillez enregistrer un audio et entrer un nom.' });
-            return;
-        }
+        if (!audioBlob || !voiceName.trim()) return;
 
         setUploading(true);
         setMessage(null);
@@ -87,8 +93,6 @@ export default function SettingsPage() {
             const formData = new FormData();
             formData.append('audio', audioBlob, 'voice_sample.webm');
             formData.append('name', voiceName);
-
-            // Use a test collaborator ID
             const collaboratorId = '22222222-2222-2222-2222-222222222222';
 
             const res = await fetch(`/api/v1/collaborators/${collaboratorId}/voice/clone`, {
@@ -98,12 +102,11 @@ export default function SettingsPage() {
 
             if (res.ok) {
                 const data = await res.json();
-                setMessage({ type: 'success', text: `Voix "${data.name}" clonée avec succès ! ID: ${data.voice_id}` });
+                setMessage({ type: 'success', text: `Voix "${data.name}" clonée avec succès !` });
                 clearAudio();
                 setVoiceName('');
             } else {
-                const err = await res.json();
-                setMessage({ type: 'error', text: err.error || 'Échec du clonage' });
+                setMessage({ type: 'error', text: 'Échec du clonage' });
             }
         } catch (err) {
             setMessage({ type: 'error', text: 'Erreur réseau' });
@@ -113,184 +116,184 @@ export default function SettingsPage() {
     };
 
     return (
-        <main style={{ minHeight: '100vh', padding: '2rem' }}>
-            <h1 style={{ fontSize: '1.5rem', marginBottom: '1.5rem' }}>
-                ⚙️ Paramètres
-            </h1>
+        <div className="min-h-screen bg-[#F9F8F6] text-[#1A1A1A] font-sans selection:bg-[#4F2830]/20 flex flex-col items-center justify-center p-4 md:p-8 relative overflow-hidden">
 
-            {/* Voice Cloning Section */}
-            <div className="card" style={{ marginBottom: '1.5rem' }}>
-                <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem' }}>
-                    🎙️ Clonage de Voix
-                </h2>
-                <p style={{ color: '#888', marginBottom: '1rem' }}>
-                    Enregistrez un échantillon de votre voix (30 secondes minimum recommandé) pour générer des messages vocaux personnalisés.
-                </p>
+            {/* Ambient Background */}
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-[#1A4D2E]/5 rounded-full blur-3xl" />
 
-                {/* Recording Controls */}
-                <div style={{
-                    padding: '1.5rem',
-                    background: 'rgba(99, 102, 241, 0.1)',
-                    borderRadius: '0.5rem',
-                    marginBottom: '1rem'
-                }}>
-                    <h3 style={{ fontSize: '1rem', marginBottom: '1rem' }}>📹 Enregistrer</h3>
+            <div className="w-full max-w-xl relative z-10">
+                {/* Header with Navigation */}
+                <div className="flex items-center justify-between mb-8">
+                    <Link href="/dashboard" className="p-2 -ml-2 text-[#1A1A1A]/40 hover:text-[#1A1A1A] transition-colors rounded-lg hover:bg-[#1A1A1A]/5">
+                        <ArrowLeft size={24} />
+                    </Link>
+                    <div className="text-center">
+                        <h1 className="text-2xl font-serif font-bold text-[#1A1A1A]">Voice Cloning Lab</h1>
+                        <p className="text-xs font-bold uppercase tracking-widest text-[#1A1A1A]/40 mt-1">Calibrage Biométrique</p>
+                    </div>
+                    <div className="w-10" />
+                </div>
 
-                    <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginBottom: '1rem' }}>
-                        {!isRecording ? (
-                            <button
-                                className="btn btn-primary"
-                                onClick={startRecording}
-                                disabled={!!audioBlob}
+                {/* Main Card */}
+                <div className="bg-white/80 backdrop-blur-xl rounded-[2rem] shadow-2xl shadow-[#1A1A1A]/5 border border-[#1A1A1A]/5 overflow-hidden">
+
+                    {/* Status Message */}
+                    <AnimatePresence>
+                        {message && (
+                            <motion.div
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: 'auto' }}
+                                exit={{ opacity: 0, height: 0 }}
+                                className={cn(
+                                    "px-6 py-3 flex items-center justify-center gap-2 text-sm font-medium",
+                                    message.type === 'success' ? "bg-[#1A4D2E]/10 text-[#1A4D2E]" : "bg-red-50 text-red-600"
+                                )}
                             >
-                                🎤 Démarrer l'enregistrement
-                            </button>
-                        ) : (
-                            <button
-                                className="btn btn-secondary"
-                                onClick={stopRecording}
-                                style={{ background: '#ef4444' }}
-                            >
-                                ⏹️ Arrêter ({'>'}30s recommandé)
-                            </button>
+                                {message.type === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+                                {message.text}
+                            </motion.div>
                         )}
+                    </AnimatePresence>
 
-                        {isRecording && (
-                            <div style={{
-                                width: '12px',
-                                height: '12px',
-                                borderRadius: '50%',
-                                background: '#ef4444',
-                                animation: 'pulse 1s infinite'
-                            }} />
-                        )}
+                    <div className="p-8 md:p-12">
+
+                        {/* Visualization Area */}
+                        <div className="h-64 mb-10 relative flex items-center justify-center">
+                            {/* Static Rings */}
+                            <div className="absolute inset-0 flex items-center justify-center">
+                                <div className="w-48 h-48 rounded-full border border-[#1A1A1A]/5" />
+                                <div className="w-32 h-32 rounded-full border border-[#1A1A1A]/10 absolute" />
+                            </div>
+
+                            {/* Dynamic Content */}
+                            {isRecording ? (
+                                <div className="flex items-center gap-1.5 h-full z-10">
+                                    {[...Array(12)].map((_, i) => (
+                                        <motion.div
+                                            key={i}
+                                            animate={{
+                                                height: [20, Math.random() * 80 + 30, 20],
+                                            }}
+                                            transition={{
+                                                repeat: Infinity,
+                                                duration: 0.4,
+                                                delay: i * 0.05
+                                            }}
+                                            className="w-2 bg-[#1A1A1A] rounded-full"
+                                        />
+                                    ))}
+                                </div>
+                            ) : audioUrl ? (
+                                <div className="relative z-10 text-center">
+                                    <button
+                                        onClick={togglePlay}
+                                        className="w-20 h-20 bg-[#1A1A1A] rounded-full flex items-center justify-center text-white mb-6 hover:scale-105 transition-transform shadow-xl mx-auto"
+                                    >
+                                        {isPlaying ? <Square size={24} fill="currentColor" /> : <Play size={28} fill="currentColor" className="ml-1" />}
+                                    </button>
+                                    <audio
+                                        ref={audioRef}
+                                        src={audioUrl}
+                                        onEnded={() => setIsPlaying(false)}
+                                        className="hidden"
+                                    />
+                                    <button
+                                        onClick={clearAudio}
+                                        className="text-xs uppercase font-bold tracking-widest text-red-500 hover:text-red-600 flex items-center gap-2 mx-auto"
+                                    >
+                                        <Trash2 size={14} /> Supprimer l'échantillon
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className="relative z-10 text-center text-[#1A1A1A]/30">
+                                    <Mic size={48} className="mx-auto mb-4" strokeWidth={1} />
+                                    <p className="font-serif text-lg text-[#1A1A1A]/60">En attente d'échantillon</p>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Controls */}
+                        <div className="flex flex-col gap-6">
+                            {!audioUrl ? (
+                                <div className="flex flex-col gap-4">
+                                    {isRecording ? (
+                                        <button
+                                            onClick={stopRecording}
+                                            className="w-full py-5 rounded-2xl bg-red-500 text-white font-bold tracking-wide uppercase transition-all shadow-lg shadow-red-500/30 hover:shadow-red-500/40 hover:-translate-y-0.5 flex items-center justify-center gap-3"
+                                        >
+                                            <StopCircle size={20} fill="currentColor" /> Arrêter l'enregistrement
+                                        </button>
+                                    ) : (
+                                        <div className="flex gap-4">
+                                            <button
+                                                onClick={startRecording}
+                                                className="flex-1 py-5 rounded-2xl bg-[#1A1A1A] text-white font-bold tracking-wide uppercase transition-all shadow-lg hover:shadow-xl hover:-translate-y-0.5 flex items-center justify-center gap-3"
+                                            >
+                                                <Mic size={20} /> Enregistrer
+                                            </button>
+                                            <button
+                                                onClick={() => fileInputRef.current?.click()}
+                                                className="px-6 py-5 rounded-2xl bg-white border border-[#1A1A1A]/10 text-[#1A1A1A] font-medium transition-all hover:bg-[#F9F8F6] flex items-center justify-center"
+                                            >
+                                                <Upload size={20} />
+                                                <input
+                                                    ref={fileInputRef}
+                                                    type="file"
+                                                    hidden
+                                                    accept="audio/*"
+                                                    onChange={handleFileUpload}
+                                                />
+                                            </button>
+                                        </div>
+                                    )}
+                                    <p className="text-center text-xs text-[#1A1A1A]/40 mt-2">
+                                        Durée recommandée : 30 à 60 secondes de parole naturelle.
+                                    </p>
+                                </div>
+                            ) : (
+                                <motion.div
+                                    initial={{ opacity: 0, y: 20 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    className="space-y-6"
+                                >
+                                    <div className="space-y-2">
+                                        <label className="text-xs font-bold text-[#1A1A1A]/40 uppercase tracking-widest">Nom du Clone</label>
+                                        <input
+                                            value={voiceName}
+                                            onChange={(e) => setVoiceName(e.target.value)}
+                                            placeholder="ex: Jean Dupont - Expert"
+                                            className="w-full bg-[#F9F8F6] border-none rounded-xl px-4 py-4 font-serif text-lg outline-none focus:ring-2 focus:ring-[#1A1A1A]/10 placeholder:text-[#1A1A1A]/20"
+                                        />
+                                    </div>
+                                    <button
+                                        onClick={uploadVoice}
+                                        disabled={!voiceName.trim() || uploading}
+                                        className="w-full py-5 rounded-2xl bg-[#1A4D2E] text-white font-bold tracking-wide uppercase transition-all shadow-lg shadow-[#1A4D2E]/20 hover:shadow-[#1A4D2E]/40 hover:-translate-y-0.5 disabled:opacity-50 disabled:hover:translate-y-0 flex items-center justify-center gap-3"
+                                    >
+                                        {uploading ? (
+                                            <>
+                                                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                                Clonage en cours...
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Fingerprint size={20} /> Générer l'empreinte vocale
+                                            </>
+                                        )}
+                                    </button>
+                                </motion.div>
+                            )}
+                        </div>
+
                     </div>
 
-                    <p style={{ color: '#666', fontSize: '0.875rem' }}>
-                        <strong>Conseils :</strong> Parlez clairement pendant au moins 30 secondes. Lisez un texte à voix haute pour un meilleur résultat.
-                    </p>
-                </div>
-
-                {/* File Upload */}
-                <div style={{
-                    padding: '1.5rem',
-                    background: 'rgba(34, 197, 94, 0.1)',
-                    borderRadius: '0.5rem',
-                    marginBottom: '1rem'
-                }}>
-                    <h3 style={{ fontSize: '1rem', marginBottom: '1rem' }}>📁 Uploader un fichier audio</h3>
-
-                    <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept="audio/*"
-                        onChange={handleFileUpload}
-                        style={{ marginBottom: '0.5rem' }}
-                    />
-                    <p style={{ color: '#666', fontSize: '0.75rem' }}>
-                        Formats acceptés : MP3, WAV, M4A, OGG (max 10MB)
-                    </p>
-                </div>
-
-                {/* Audio Preview */}
-                {audioUrl && (
-                    <div style={{
-                        padding: '1rem',
-                        background: 'rgba(59, 130, 246, 0.1)',
-                        borderRadius: '0.5rem',
-                        marginBottom: '1rem'
-                    }}>
-                        <h3 style={{ fontSize: '1rem', marginBottom: '0.5rem' }}>🔊 Aperçu</h3>
-                        <audio controls src={audioUrl} style={{ width: '100%' }} />
-                        <button
-                            onClick={clearAudio}
-                            style={{ marginTop: '0.5rem', color: '#ef4444', background: 'none', border: 'none', cursor: 'pointer' }}
-                        >
-                            🗑️ Supprimer et recommencer
-                        </button>
+                    {/* Secure Footer */}
+                    <div className="bg-[#F9F8F6] px-8 py-4 border-t border-[#1A1A1A]/5 flex items-center justify-center gap-2 text-xs text-[#1A1A1A]/40 font-medium">
+                        <Lock size={12} />
+                        Sécurisé par VoiceShield™ • Données cryptées
                     </div>
-                )}
-
-                {/* Voice Name & Submit */}
-                <div style={{
-                    padding: '1rem',
-                    background: '#1a1a2e',
-                    borderRadius: '0.5rem',
-                    marginBottom: '1rem'
-                }}>
-                    <label style={{ display: 'block', marginBottom: '0.5rem' }}>
-                        Nom de la voix *
-                    </label>
-                    <input
-                        type="text"
-                        value={voiceName}
-                        onChange={(e) => setVoiceName(e.target.value)}
-                        placeholder="ex: Jean Dupont - Cabinet XYZ"
-                        style={{
-                            width: '100%',
-                            padding: '0.75rem',
-                            borderRadius: '0.5rem',
-                            border: '1px solid #333',
-                            background: '#0a0a14',
-                            color: '#fff',
-                            marginBottom: '1rem'
-                        }}
-                    />
-
-                    <button
-                        className="btn btn-primary"
-                        onClick={uploadVoice}
-                        disabled={!audioBlob || !voiceName.trim() || uploading}
-                        style={{ width: '100%' }}
-                    >
-                        {uploading ? '⏳ Clonage en cours...' : '🚀 Cloner ma voix'}
-                    </button>
                 </div>
-
-                {/* Messages */}
-                {message && (
-                    <div style={{
-                        padding: '1rem',
-                        borderRadius: '0.5rem',
-                        background: message.type === 'success' ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)',
-                        border: `1px solid ${message.type === 'success' ? '#22c55e' : '#ef4444'}`
-                    }}>
-                        {message.type === 'success' ? '✅' : '❌'} {message.text}
-                    </div>
-                )}
             </div>
-
-            {/* How It Works */}
-            <div className="card">
-                <h2 style={{ fontSize: '1.25rem', marginBottom: '1rem' }}>
-                    ℹ️ Comment ça marche ?
-                </h2>
-
-                <ol style={{ paddingLeft: '1.5rem', lineHeight: '1.8' }}>
-                    <li><strong>Enregistrez</strong> ou uploadez un échantillon audio de votre voix (30 secondes minimum)</li>
-                    <li><strong>Nommez</strong> votre voix (ex: "Marie - Comptable Senior")</li>
-                    <li><strong>Cliquez</strong> sur "Cloner ma voix" - ElevenLabs analyse et crée votre clone vocal</li>
-                    <li><strong>Utilisez</strong> votre voix clonée pour envoyer des relances vocales personnalisées aux clients</li>
-                </ol>
-
-                <div style={{
-                    marginTop: '1rem',
-                    padding: '1rem',
-                    background: 'rgba(251, 191, 36, 0.1)',
-                    borderRadius: '0.5rem',
-                    border: '1px solid rgba(251, 191, 36, 0.3)'
-                }}>
-                    <strong>⚠️ Note :</strong> Le clonage de voix nécessite une clé API ElevenLabs avec les permissions appropriées.
-                    La qualité du clone dépend de la qualité et durée de l'échantillon audio.
-                </div>
-            </div>
-
-            <style jsx>{`
-                @keyframes pulse {
-                    0%, 100% { opacity: 1; }
-                    50% { opacity: 0.5; }
-                }
-            `}</style>
-        </main>
+        </div>
     );
 }

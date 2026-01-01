@@ -2,6 +2,14 @@
 
 import { useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+    Upload, FileText, CheckCircle2, AlertTriangle,
+    ArrowLeft, ArrowRight, Database, LayoutTemplate,
+    Calendar, CreditCard, Type, X
+} from 'lucide-react';
+import { cn } from '@/lib/utils';
+import Link from 'next/link';
 
 interface PreviewData {
     filename: string;
@@ -43,7 +51,6 @@ export default function ImportPage() {
         label_column: 0,
     });
 
-    // Demo cabinet ID (in production, get from auth context)
     const cabinetId = '00000000-0000-0000-0000-000000000001';
 
     const handleDrag = useCallback((e: React.DragEvent) => {
@@ -60,7 +67,6 @@ export default function ImportPage() {
         e.preventDefault();
         e.stopPropagation();
         setDragActive(false);
-
         if (e.dataTransfer.files && e.dataTransfer.files[0]) {
             handleFile(e.dataTransfer.files[0]);
         }
@@ -78,7 +84,6 @@ export default function ImportPage() {
         setResult(null);
         setPreview(null);
 
-        // Upload for preview
         const formData = new FormData();
         formData.append('file', selectedFile);
 
@@ -96,7 +101,6 @@ export default function ImportPage() {
             const data: PreviewData = await res.json();
             setPreview(data);
 
-            // Set detected mapping
             if (data.detected) {
                 setMapping({
                     amount_column: data.detected.mapping.amount_column,
@@ -111,7 +115,6 @@ export default function ImportPage() {
 
     const handleImport = async () => {
         if (!file) return;
-
         setImporting(true);
         setError(null);
 
@@ -147,290 +150,275 @@ export default function ImportPage() {
     };
 
     return (
-        <main style={{ minHeight: '100vh', padding: '2rem' }}>
-            {/* Header */}
-            <div style={{ marginBottom: '2rem' }}>
-                <a href="/" style={{ color: '#888', fontSize: '0.875rem' }}>← Retour</a>
-                <h1 style={{ fontSize: '1.75rem', marginTop: '0.5rem' }}>
-                    Import CSV
-                </h1>
-                <p style={{ color: '#888' }}>
-                    Importez vos écritures du compte 471 depuis votre ERP
-                </p>
-            </div>
-
-            {/* Result Screen */}
-            {result && (
-                <div className="card animate-fadeIn" style={{ maxWidth: '600px', margin: '0 auto' }}>
-                    <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
-                        <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>
-                            {result.failed_rows === 0 ? '✅' : '⚠️'}
-                        </div>
-                        <h2 style={{ fontSize: '1.25rem' }}>Import terminé</h2>
-                    </div>
-
-                    <div style={{
-                        display: 'grid',
-                        gridTemplateColumns: 'repeat(3, 1fr)',
-                        gap: '1rem',
-                        marginBottom: '1.5rem'
-                    }}>
-                        <div style={{ textAlign: 'center' }}>
-                            <div style={{ fontSize: '1.5rem', fontWeight: 600 }}>{result.total_rows}</div>
-                            <div style={{ color: '#888', fontSize: '0.75rem' }}>Total lignes</div>
-                        </div>
-                        <div style={{ textAlign: 'center' }}>
-                            <div style={{ fontSize: '1.5rem', fontWeight: 600, color: '#22c55e' }}>
-                                {result.imported_rows}
-                            </div>
-                            <div style={{ color: '#888', fontSize: '0.75rem' }}>Importées</div>
-                        </div>
-                        <div style={{ textAlign: 'center' }}>
-                            <div style={{ fontSize: '1.5rem', fontWeight: 600, color: result.failed_rows > 0 ? '#ef4444' : '#888' }}>
-                                {result.failed_rows}
-                            </div>
-                            <div style={{ color: '#888', fontSize: '0.75rem' }}>Erreurs</div>
-                        </div>
-                    </div>
-
-                    {result.errors && result.errors.length > 0 && (
-                        <div style={{
-                            background: 'rgba(239, 68, 68, 0.1)',
-                            borderRadius: '0.5rem',
-                            padding: '1rem',
-                            marginBottom: '1.5rem',
-                            maxHeight: '150px',
-                            overflow: 'auto'
-                        }}>
-                            <div style={{ fontWeight: 500, marginBottom: '0.5rem', color: '#ef4444' }}>
-                                Détail des erreurs:
-                            </div>
-                            {result.errors.slice(0, 10).map((err, idx) => (
-                                <div key={idx} style={{ fontSize: '0.75rem', color: '#888' }}>
-                                    Ligne {err.row}: {err.message}
-                                </div>
-                            ))}
-                            {result.errors.length > 10 && (
-                                <div style={{ fontSize: '0.75rem', color: '#888', marginTop: '0.5rem' }}>
-                                    ...et {result.errors.length - 10} autres erreurs
-                                </div>
-                            )}
-                        </div>
-                    )}
-
-                    <div style={{ display: 'flex', gap: '1rem' }}>
-                        <button
-                            className="btn btn-primary"
-                            style={{ flex: 1 }}
-                            onClick={() => router.push('/dashboard')}
-                        >
-                            Voir le Dashboard
-                        </button>
-                        <button
-                            className="btn btn-secondary"
-                            onClick={resetForm}
-                        >
-                            Nouvel import
-                        </button>
-                    </div>
+        <div className="min-h-screen bg-[#F9F8F6] text-[#1A1A1A] font-sans selection:bg-[#4F2830]/20 flex flex-col">
+            {/* Navbar */}
+            <nav className="shrink-0 bg-[#F9F8F6] border-b border-[#1A1A1A]/5 px-4 md:px-8 h-16 flex items-center justify-between z-50 sticky top-0 backdrop-blur-md bg-opacity-90">
+                <div className="flex items-center gap-4 md:gap-6">
+                    <Link href="/dashboard" className="p-2 -ml-2 text-[#1A1A1A]/40 hover:text-[#1A1A1A] transition-colors rounded-lg hover:bg-[#1A1A1A]/5">
+                        <ArrowLeft size={20} />
+                    </Link>
+                    <span className="text-xl font-serif font-bold tracking-tight">Import des Écritures</span>
                 </div>
-            )}
+            </nav>
 
-            {/* Upload / Preview Screen */}
-            {!result && (
-                <div style={{ maxWidth: '800px', margin: '0 auto' }}>
-                    {/* Drop Zone */}
-                    <div
-                        onDragEnter={handleDrag}
-                        onDragLeave={handleDrag}
-                        onDragOver={handleDrag}
-                        onDrop={handleDrop}
-                        style={{
-                            border: `2px dashed ${dragActive ? '#6366f1' : '#333'}`,
-                            borderRadius: '0.75rem',
-                            padding: '3rem',
-                            textAlign: 'center',
-                            background: dragActive ? 'rgba(99, 102, 241, 0.1)' : 'transparent',
-                            transition: 'all 0.2s',
-                            marginBottom: '1.5rem',
-                            cursor: 'pointer'
-                        }}
-                        onClick={() => document.getElementById('file-input')?.click()}
-                    >
-                        <input
-                            id="file-input"
-                            type="file"
-                            accept=".csv,.txt"
-                            onChange={handleFileInput}
-                            style={{ display: 'none' }}
-                        />
-                        <div style={{ fontSize: '2.5rem', marginBottom: '1rem' }}>📄</div>
-                        <p style={{ marginBottom: '0.5rem' }}>
-                            {file ? file.name : 'Glissez votre fichier CSV ici'}
-                        </p>
-                        <p style={{ color: '#888', fontSize: '0.875rem' }}>
-                            ou cliquez pour sélectionner
-                        </p>
-                        {file && (
-                            <p style={{ color: '#888', fontSize: '0.75rem', marginTop: '0.5rem' }}>
-                                {(file.size / 1024).toFixed(1)} KB
+            <main className="flex-1 max-w-5xl mx-auto w-full p-4 md:p-8">
+                <AnimatePresence mode="wait">
+                    {/* 1. Success State */}
+                    {result ? (
+                        <motion.div
+                            key="result"
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -20 }}
+                            className="bg-white rounded-3xl p-8 md:p-12 border border-[#1A1A1A]/5 shadow-xl text-center max-w-2xl mx-auto"
+                        >
+                            <div className="w-20 h-20 rounded-full bg-[#1A4D2E]/5 text-[#1A4D2E] flex items-center justify-center mx-auto mb-6">
+                                {result.failed_rows === 0 ? <CheckCircle2 size={40} /> : <AlertTriangle size={40} className="text-amber-500" />}
+                            </div>
+
+                            <h2 className="text-3xl md:text-4xl font-serif font-bold mb-2">Import Terminé</h2>
+                            <p className="text-[#1A1A1A]/60 font-medium mb-10">
+                                {result.failed_rows === 0
+                                    ? "Toutes les lignes ont été intégrées avec succès."
+                                    : "L'import est terminé avec quelques avertissements."}
                             </p>
-                        )}
-                    </div>
 
-                    {/* Error */}
-                    {error && (
-                        <div className="badge badge-error" style={{
-                            display: 'block',
-                            padding: '1rem',
-                            marginBottom: '1.5rem',
-                            borderRadius: '0.5rem'
-                        }}>
-                            {error}
-                        </div>
-                    )}
-
-                    {/* Preview */}
-                    {preview && (
-                        <div className="card animate-fadeIn">
-                            <div style={{
-                                display: 'flex',
-                                justifyContent: 'space-between',
-                                alignItems: 'center',
-                                marginBottom: '1rem'
-                            }}>
-                                <h3 style={{ fontSize: '1rem' }}>Aperçu ({preview.total_rows} lignes)</h3>
-                                {preview.detected && (
-                                    <span className={`badge ${preview.detected.confidence > 0.7 ? 'badge-success' : 'badge-pending'}`}>
-                                        Confiance: {Math.round(preview.detected.confidence * 100)}%
-                                    </span>
-                                )}
-                            </div>
-
-                            {/* Column Mapping */}
-                            <div style={{
-                                display: 'grid',
-                                gridTemplateColumns: 'repeat(3, 1fr)',
-                                gap: '1rem',
-                                marginBottom: '1.5rem',
-                                padding: '1rem',
-                                background: '#0a0a0a',
-                                borderRadius: '0.5rem'
-                            }}>
-                                <div>
-                                    <label style={{ fontSize: '0.75rem', color: '#888', display: 'block', marginBottom: '0.25rem' }}>
-                                        Colonne Montant
-                                    </label>
-                                    <select
-                                        className="input"
-                                        value={mapping.amount_column}
-                                        onChange={(e) => setMapping({ ...mapping, amount_column: parseInt(e.target.value) })}
-                                    >
-                                        {preview.detected.headers.map((h, i) => (
-                                            <option key={i} value={i}>{h || `Colonne ${i + 1}`}</option>
-                                        ))}
-                                    </select>
+                            <div className="grid grid-cols-3 gap-4 mb-10">
+                                <div className="p-4 rounded-2xl bg-[#F9F8F6] border border-[#1A1A1A]/5">
+                                    <div className="text-2xl font-bold font-serif mb-1">{result.total_rows}</div>
+                                    <div className="text-[10px] uppercase font-bold tracking-widest text-[#1A1A1A]/40">Total</div>
                                 </div>
-                                <div>
-                                    <label style={{ fontSize: '0.75rem', color: '#888', display: 'block', marginBottom: '0.25rem' }}>
-                                        Colonne Date
-                                    </label>
-                                    <select
-                                        className="input"
-                                        value={mapping.date_column}
-                                        onChange={(e) => setMapping({ ...mapping, date_column: parseInt(e.target.value) })}
-                                    >
-                                        {preview.detected.headers.map((h, i) => (
-                                            <option key={i} value={i}>{h || `Colonne ${i + 1}`}</option>
-                                        ))}
-                                    </select>
+                                <div className="p-4 rounded-2xl bg-[#F9F8F6] border border-[#1A1A1A]/5">
+                                    <div className="text-2xl font-bold font-serif mb-1 text-[#1A4D2E]">{result.imported_rows}</div>
+                                    <div className="text-[10px] uppercase font-bold tracking-widest text-[#1A1A1A]/40">Succès</div>
                                 </div>
-                                <div>
-                                    <label style={{ fontSize: '0.75rem', color: '#888', display: 'block', marginBottom: '0.25rem' }}>
-                                        Colonne Libellé
-                                    </label>
-                                    <select
-                                        className="input"
-                                        value={mapping.label_column}
-                                        onChange={(e) => setMapping({ ...mapping, label_column: parseInt(e.target.value) })}
-                                    >
-                                        {preview.detected.headers.map((h, i) => (
-                                            <option key={i} value={i}>{h || `Colonne ${i + 1}`}</option>
-                                        ))}
-                                    </select>
+                                <div className="p-4 rounded-2xl bg-[#F9F8F6] border border-[#1A1A1A]/5">
+                                    <div className={`text-2xl font-bold font-serif mb-1 ${result.failed_rows > 0 ? 'text-red-500' : 'text-[#1A1A1A]/40'}`}>{result.failed_rows}</div>
+                                    <div className="text-[10px] uppercase font-bold tracking-widest text-[#1A1A1A]/40">Erreurs</div>
                                 </div>
                             </div>
 
-                            {/* Data Preview Table */}
-                            <div style={{ overflowX: 'auto' }}>
-                                <table style={{ fontSize: '0.75rem' }}>
-                                    <thead>
-                                        <tr>
-                                            {preview.rows[0]?.map((header, i) => (
-                                                <th key={i} style={{
-                                                    background:
-                                                        i === mapping.amount_column ? 'rgba(99, 102, 241, 0.2)' :
-                                                            i === mapping.date_column ? 'rgba(34, 197, 94, 0.2)' :
-                                                                i === mapping.label_column ? 'rgba(245, 158, 11, 0.2)' :
-                                                                    'transparent'
-                                                }}>
-                                                    {header || `Col ${i + 1}`}
-                                                </th>
-                                            ))}
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {preview.rows.slice(1, 6).map((row, i) => (
-                                            <tr key={i}>
-                                                {row.map((cell, j) => (
-                                                    <td key={j} style={{
-                                                        background:
-                                                            j === mapping.amount_column ? 'rgba(99, 102, 241, 0.1)' :
-                                                                j === mapping.date_column ? 'rgba(34, 197, 94, 0.1)' :
-                                                                    j === mapping.label_column ? 'rgba(245, 158, 11, 0.1)' :
-                                                                        'transparent'
-                                                    }}>
-                                                        {cell}
-                                                    </td>
-                                                ))}
-                                            </tr>
+                            {result.errors && result.errors.length > 0 && (
+                                <div className="text-left mb-8 p-4 bg-red-50 rounded-xl border border-red-100 max-h-40 overflow-y-auto custom-scrollbar">
+                                    <h4 className="text-xs font-bold uppercase text-red-800 mb-2 sticky top-0 bg-red-50 pb-2">Rapport d'erreurs</h4>
+                                    <ul className="space-y-1">
+                                        {result.errors.map((err, idx) => (
+                                            <li key={idx} className="text-xs text-red-600 font-mono">
+                                                Ligne {err.row}: {err.message}
+                                            </li>
                                         ))}
-                                    </tbody>
-                                </table>
-                            </div>
-
-                            {preview.rows.length > 6 && (
-                                <p style={{ color: '#888', fontSize: '0.75rem', marginTop: '0.5rem', textAlign: 'center' }}>
-                                    ...et {preview.total_rows - 5} autres lignes
-                                </p>
+                                    </ul>
+                                </div>
                             )}
 
-                            {/* Import Button */}
-                            <div style={{ marginTop: '1.5rem', display: 'flex', gap: '1rem' }}>
-                                <button
-                                    className="btn btn-primary"
-                                    style={{ flex: 1 }}
-                                    onClick={handleImport}
-                                    disabled={importing}
-                                >
-                                    {importing ? (
-                                        <span className="animate-pulse">Import en cours...</span>
-                                    ) : (
-                                        `Importer ${preview.total_rows} lignes`
-                                    )}
-                                </button>
-                                <button
-                                    className="btn btn-secondary"
-                                    onClick={resetForm}
-                                    disabled={importing}
-                                >
-                                    Annuler
+                            <div className="flex gap-4 justify-center">
+                                <Link href="/dashboard" className="px-8 py-3 bg-[#1A1A1A] text-white rounded-xl font-medium hover:bg-[#1A4D2E] transition-all shadow-lg hover:shadow-xl hover:-translate-y-0.5">
+                                    Voir le Dashboard
+                                </Link>
+                                <button onClick={resetForm} className="px-8 py-3 bg-white border border-[#1A1A1A]/10 text-[#1A1A1A] rounded-xl font-medium hover:bg-[#F9F8F6] transition-all">
+                                    Nouvel Import
                                 </button>
                             </div>
-                        </div>
+                        </motion.div>
+                    ) : (
+                        /* 2. Upload / Preview State */
+                        <motion.div
+                            key="upload"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="space-y-8"
+                        >
+                            {/* Upload Zone */}
+                            {!preview && (
+                                <div
+                                    onDragEnter={handleDrag}
+                                    onDragLeave={handleDrag}
+                                    onDragOver={handleDrag}
+                                    onDrop={handleDrop}
+                                    onClick={() => document.getElementById('file-input')?.click()}
+                                    className={cn(
+                                        "group border-2 border-dashed rounded-3xl p-12 md:p-20 text-center transition-all duration-300 cursor-pointer relative overflow-hidden",
+                                        dragActive
+                                            ? "border-[#1A4D2E] bg-[#1A4D2E]/5"
+                                            : "border-[#1A1A1A]/10 hover:border-[#1A1A1A]/30 hover:bg-white"
+                                    )}
+                                >
+                                    <input
+                                        id="file-input"
+                                        type="file"
+                                        accept=".csv,.txt"
+                                        onChange={handleFileInput}
+                                        className="hidden"
+                                    />
+
+                                    <div className="relative z-10 flex flex-col items-center">
+                                        <div className={cn(
+                                            "w-16 h-16 md:w-20 md:h-20 rounded-full flex items-center justify-center mb-6 transition-all duration-300",
+                                            dragActive ? "bg-[#1A4D2E] text-white" : "bg-[#1A1A1A]/5 text-[#1A1A1A]/40 group-hover:bg-[#1A1A1A] group-hover:text-white"
+                                        )}>
+                                            <Upload className="w-8 h-8 md:w-10 md:h-10" />
+                                        </div>
+                                        <h3 className="text-xl md:text-2xl font-serif font-bold mb-2">
+                                            {dragActive ? "Déposez le fichier ici" : "Importez votre CSV"}
+                                        </h3>
+                                        <p className="text-[#1A1A1A]/50 max-w-sm mx-auto mb-8">
+                                            Glissez-déposez votre export comptable (FEC) ou cliquez pour parcourir vos fichiers.
+                                        </p>
+                                        <span className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-[#1A1A1A]/10 text-xs font-bold uppercase tracking-wider text-[#1A1A1A]/60 bg-white">
+                                            <Database size={14} />
+                                            Format supporté : CSV UTF-8
+                                        </span>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Error Message */}
+                            <AnimatePresence>
+                                {error && (
+                                    <motion.div
+                                        initial={{ opacity: 0, height: 0 }}
+                                        animate={{ opacity: 1, height: 'auto' }}
+                                        exit={{ opacity: 0, height: 0 }}
+                                        className="bg-red-50 border border-red-100 text-red-800 px-6 py-4 rounded-xl flex items-center gap-3"
+                                    >
+                                        <AlertTriangle size={20} />
+                                        {error}
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
+
+                            {/* Preview Section */}
+                            {preview && (
+                                <motion.div
+                                    initial={{ opacity: 0, y: 40 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    className="bg-white rounded-3xl border border-[#1A1A1A]/5 shadow-xl overflow-hidden"
+                                >
+                                    {/* Header */}
+                                    <div className="p-6 md:p-8 border-b border-[#1A1A1A]/5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                                        <div>
+                                            <div className="flex items-center gap-2 mb-1">
+                                                <FileText size={16} className="text-[#1A1A1A]/40" />
+                                                <h3 className="font-bold text-lg">{file?.name}</h3>
+                                            </div>
+                                            <p className="text-[#1A1A1A]/40 text-sm">{preview.total_rows} écritures détectées</p>
+                                        </div>
+
+                                        <div className="flex items-center gap-3">
+                                            <button onClick={resetForm} className="p-2 text-[#1A1A1A]/40 hover:text-red-500 transition-colors">
+                                                <X size={20} />
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* Column Mapping Grid */}
+                                    <div className="p-6 md:p-8 bg-[#F9F8F6]/50 border-b border-[#1A1A1A]/5 grid md:grid-cols-3 gap-6">
+                                        <div className="space-y-2">
+                                            <label className="text-xs font-bold uppercase tracking-widest text-[#1A1A1A]/40 flex items-center gap-2">
+                                                <CreditCard size={14} /> Montant
+                                            </label>
+                                            <select
+                                                value={mapping.amount_column}
+                                                onChange={(e) => setMapping({ ...mapping, amount_column: parseInt(e.target.value) })}
+                                                className="w-full bg-white border border-[#1A1A1A]/10 rounded-xl px-4 py-3 font-medium outline-none focus:ring-2 focus:ring-[#1A1A1A]/10 transition-all hover:border-[#1A1A1A]/30"
+                                            >
+                                                {preview.detected.headers.map((h, i) => (
+                                                    <option key={i} value={i}>{h || `Colonne ${i + 1}`}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-xs font-bold uppercase tracking-widest text-[#1A1A1A]/40 flex items-center gap-2">
+                                                <Calendar size={14} /> Date
+                                            </label>
+                                            <select
+                                                value={mapping.date_column}
+                                                onChange={(e) => setMapping({ ...mapping, date_column: parseInt(e.target.value) })}
+                                                className="w-full bg-white border border-[#1A1A1A]/10 rounded-xl px-4 py-3 font-medium outline-none focus:ring-2 focus:ring-[#1A1A1A]/10 transition-all hover:border-[#1A1A1A]/30"
+                                            >
+                                                {preview.detected.headers.map((h, i) => (
+                                                    <option key={i} value={i}>{h || `Colonne ${i + 1}`}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-xs font-bold uppercase tracking-widest text-[#1A1A1A]/40 flex items-center gap-2">
+                                                <Type size={14} /> Libellé
+                                            </label>
+                                            <select
+                                                value={mapping.label_column}
+                                                onChange={(e) => setMapping({ ...mapping, label_column: parseInt(e.target.value) })}
+                                                className="w-full bg-white border border-[#1A1A1A]/10 rounded-xl px-4 py-3 font-medium outline-none focus:ring-2 focus:ring-[#1A1A1A]/10 transition-all hover:border-[#1A1A1A]/30"
+                                            >
+                                                {preview.detected.headers.map((h, i) => (
+                                                    <option key={i} value={i}>{h || `Colonne ${i + 1}`}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    {/* Data Table */}
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-sm">
+                                            <thead className="bg-[#F9F8F6]">
+                                                <tr>
+                                                    {preview.rows[0]?.slice(0, 8).map((header, i) => (
+                                                        <th key={i} className={cn(
+                                                            "px-6 py-4 text-left font-serif font-bold text-[#1A1A1A]",
+                                                            i === mapping.amount_column && "bg-[#1A4D2E]/10 text-[#1A4D2E]",
+                                                            i === mapping.date_column && "bg-[#1A4D2E]/10 text-[#1A4D2E]",
+                                                            i === mapping.label_column && "bg-[#1A4D2E]/10 text-[#1A4D2E]"
+                                                        )}>
+                                                            {header || `Col ${i + 1}`}
+                                                        </th>
+                                                    ))}
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-[#1A1A1A]/5">
+                                                {preview.rows.slice(1, 6).map((row, i) => (
+                                                    <tr key={i} className="hover:bg-[#F9F8F6]/50 transition-colors">
+                                                        {row.slice(0, 8).map((cell, j) => (
+                                                            <td key={j} className={cn(
+                                                                "px-6 py-4 font-medium text-[#1A1A1A]/80 whitespace-nowrap",
+                                                                j === mapping.amount_column && "bg-[#1A4D2E]/5 font-bold text-[#1A4D2E]",
+                                                                j === mapping.date_column && "bg-[#1A4D2E]/5 text-[#1A4D2E]",
+                                                                j === mapping.label_column && "bg-[#1A4D2E]/5 text-[#1A4D2E]"
+                                                            )}>
+                                                                {cell}
+                                                            </td>
+                                                        ))}
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+
+                                    {/* Action Footer */}
+                                    <div className="p-6 md:p-8 bg-[#F9F8F6]/30 border-t border-[#1A1A1A]/5 flex justify-end">
+                                        <button
+                                            onClick={handleImport}
+                                            disabled={importing}
+                                            className="px-8 py-4 bg-[#1A1A1A] text-white rounded-xl font-medium hover:bg-[#1A4D2E] transition-all shadow-lg hover:shadow-xl hover:-translate-y-0.5 disabled:opacity-70 disabled:hover:translate-y-0 flex items-center gap-3"
+                                        >
+                                            {importing ? (
+                                                <>
+                                                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                                    Traitement en cours...
+                                                </>
+                                            ) : (
+                                                <>
+                                                    Confirmer l'importation <ArrowRight size={20} />
+                                                </>
+                                            )}
+                                        </button>
+                                    </div>
+                                </motion.div>
+                            )}
+                        </motion.div>
                     )}
-                </div>
-            )}
-        </main>
+                </AnimatePresence>
+            </main>
+        </div>
     );
 }

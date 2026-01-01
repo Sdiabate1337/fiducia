@@ -1,12 +1,14 @@
 import type { Metadata } from 'next';
-import { Inter } from 'next/font/google';
+import { Inter, Plus_Jakarta_Sans, Playfair_Display } from 'next/font/google';
 import './globals.css';
 
-const inter = Inter({ subsets: ['latin'] });
+const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
+const jakarta = Plus_Jakarta_Sans({ subsets: ['latin'], variable: '--font-jakarta' });
+const playfair = Playfair_Display({ subsets: ['latin'], variable: '--font-playfair' });
 
 export const metadata: Metadata = {
-    title: 'Fiducia - Assistant de Production Comptable',
-    description: '100% des lignes 471 justifiées, sans friction',
+    title: 'Fiducia - Infrastructure Autonome',
+    description: 'Comptabilité automatisée par IA',
 };
 
 export default function RootLayout({
@@ -15,8 +17,8 @@ export default function RootLayout({
     children: React.ReactNode;
 }) {
     return (
-        <html lang="fr">
-            <body className={inter.className}>{children}</body>
+        <html lang="fr" className={`${inter.variable} ${jakarta.variable} ${playfair.variable} dark`}>
+            <body className="font-body bg-background text-foreground antialiased selection:bg-primary/20">{children}</body>
         </html>
     );
 }
