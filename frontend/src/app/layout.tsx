@@ -11,14 +11,20 @@ export const metadata: Metadata = {
     description: 'Comptabilité automatisée par IA',
 };
 
+import { AuthProvider } from '@/context/AuthContext';
+
 export default function RootLayout({
     children,
-}: {
+}: Readonly<{
     children: React.ReactNode;
-}) {
+}>) {
     return (
-        <html lang="fr" className={`${inter.variable} ${jakarta.variable} ${playfair.variable} dark`}>
-            <body className="font-body bg-background text-foreground antialiased selection:bg-primary/20">{children}</body>
+        <html lang="fr" className={`${jakarta.variable} ${playfair.variable} ${inter.variable}`}>
+            <body className="font-sans antialiased bg-[#F9F8F6]">
+                <AuthProvider>
+                    {children}
+                </AuthProvider>
+            </body>
         </html>
     );
 }

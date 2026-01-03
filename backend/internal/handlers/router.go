@@ -19,6 +19,7 @@ import (
 
 	"github.com/fiducia/backend/internal/config"
 	"github.com/fiducia/backend/internal/database"
+	"github.com/fiducia/backend/internal/middleware"
 	"github.com/fiducia/backend/internal/models"
 	"github.com/fiducia/backend/internal/repository"
 	"github.com/fiducia/backend/internal/services"
@@ -27,19 +28,23 @@ import (
 
 // Router holds dependencies for HTTP handlers
 type Router struct {
-	db          *database.DB
-	cfg         *config.Config
-	mux         *http.ServeMux
-	importer    *services.CSVImporter
-	lineRepo    *repository.PendingLineRepository
-	waClient    *whatsapp.TwilioClient
-	voiceSvc    *services.VoiceService
-	ocrSvc      *services.OCRService
-	matchingSvc *services.MatchingService
-	docRepo     *repository.DocumentRepository
-	clientRepo  *repository.ClientRepository
-	msgRepo     *repository.MessageRepository
-	voiceRepo   *repository.VoiceSettingsRepository
+	db            *database.DB
+	cfg           *config.Config
+	mux           *http.ServeMux
+	importer      *services.CSVImporter
+	lineRepo      *repository.PendingLineRepository
+	waClient      *whatsapp.TwilioClient
+	voiceSvc      *services.VoiceService
+	ocrSvc        *services.OCRService
+	matchingSvc   *services.MatchingService
+	docRepo       *repository.DocumentRepository
+	clientRepo    *repository.ClientRepository
+	msgRepo       *repository.MessageRepository
+	voiceRepo     *repository.VoiceSettingsRepository
+	campaignRepo  *repository.CampaignRepository
+	executionRepo *repository.CampaignExecutionRepository
+	engine        *services.CampaignEngine
+	authSvc       *services.AuthService
 }
 
 // NewRouter creates a new HTTP router with all routes
@@ -48,23 +53,34 @@ func NewRouter(db *database.DB, cfg *config.Config) *Router {
 	docRepo := repository.NewDocumentRepository(db.Pool)
 	clientRepo := repository.NewClientRepository(db.Pool)
 	msgRepo := repository.NewMessageRepository(db.Pool)
+	voiceRepo := repository.NewVoiceSettingsRepository(db.Pool)
+	campaignRepo := repository.NewCampaignRepository(db.Pool)
+	executionRepo := repository.NewCampaignExecutionRepository(db.Pool)
+
 	ocrSvc := services.NewOCRService(cfg.OpenAIAPIKey, "/tmp/fiducia/documents")
 	matchingSvc := services.NewMatchingService(docRepo, lineRepo)
+	voiceSvc := services.NewVoiceService(cfg.ElevenLabsAPIKey, "/tmp/fiducia/voice", cfg.BaseURL)
+	engine := services.NewCampaignEngine(db.Pool, campaignRepo, lineRepo, executionRepo, voiceSvc)
+	authSvc := services.NewAuthService(db, cfg)
 
 	r := &Router{
-		db:          db,
-		cfg:         cfg,
-		mux:         http.NewServeMux(),
-		importer:    services.NewCSVImporter(),
-		lineRepo:    lineRepo,
-		waClient:    whatsapp.NewTwilioClient(cfg.TwilioAccountSID, cfg.TwilioAuthToken, cfg.TwilioPhoneNumber),
-		voiceSvc:    services.NewVoiceService(cfg.ElevenLabsAPIKey, "/tmp/fiducia/voice", cfg.BaseURL),
-		ocrSvc:      ocrSvc,
-		matchingSvc: matchingSvc,
-		docRepo:     docRepo,
-		clientRepo:  clientRepo,
-		msgRepo:     msgRepo,
-		voiceRepo:   repository.NewVoiceSettingsRepository(db.Pool),
+		db:            db,
+		cfg:           cfg,
+		mux:           http.NewServeMux(),
+		importer:      services.NewCSVImporter(),
+		lineRepo:      lineRepo,
+		waClient:      whatsapp.NewTwilioClient(cfg.TwilioAccountSID, cfg.TwilioAuthToken, cfg.TwilioPhoneNumber),
+		voiceSvc:      voiceSvc,
+		ocrSvc:        ocrSvc,
+		matchingSvc:   matchingSvc,
+		docRepo:       docRepo,
+		clientRepo:    clientRepo,
+		msgRepo:       msgRepo,
+		voiceRepo:     voiceRepo,
+		campaignRepo:  campaignRepo,
+		executionRepo: executionRepo,
+		engine:        engine,
+		authSvc:       authSvc,
 	}
 
 	r.registerRoutes()
@@ -74,6 +90,31 @@ func NewRouter(db *database.DB, cfg *config.Config) *Router {
 // ServeHTTP implements http.Handler
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mux.ServeHTTP(w, req)
+}
+
+// StartCampaignWorker starts the background task for campaign execution
+func (r *Router) StartCampaignWorker(ctx context.Context) {
+	slog.Info("Starting Campaign Worker...")
+	ticker := time.NewTicker(1 * time.Minute)
+	go func() {
+		defer ticker.Stop()
+		// Run immediately on start
+		if err := r.engine.ExecuteCampaignCycle(ctx); err != nil {
+			slog.Error("Campaign Cycle Error", "error", err)
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("Stopping Campaign Worker")
+				return
+			case <-ticker.C:
+				if err := r.engine.ExecuteCampaignCycle(ctx); err != nil {
+					slog.Error("Campaign Cycle Error", "error", err)
+				}
+			}
+		}
+	}()
 }
 
 // GetPool returns the database pool
@@ -87,10 +128,17 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("GET /health", r.healthCheck)
 	r.mux.HandleFunc("GET /api/v1/health", r.healthCheck)
 
-	// Cabinets
-	r.mux.HandleFunc("GET /api/v1/cabinets", r.listCabinets)
-	r.mux.HandleFunc("POST /api/v1/cabinets", r.createCabinet)
-	r.mux.HandleFunc("GET /api/v1/cabinets/{id}", r.getCabinet)
+	// Auth
+	r.mux.HandleFunc("POST /api/v1/auth/register", r.handleRegister)
+	r.mux.HandleFunc("POST /api/v1/auth/login", r.handleLogin)
+	r.mux.Handle("GET /api/v1/auth/me", middleware.Auth(r.cfg)(http.HandlerFunc(r.handleMe)))
+
+	// Cabinets (Protected)
+	r.mux.Handle("GET /api/v1/cabinets", middleware.Auth(r.cfg)(http.HandlerFunc(r.listCabinets)))
+	r.mux.Handle("POST /api/v1/cabinets", middleware.Auth(r.cfg)(http.HandlerFunc(r.createCabinet)))
+	r.mux.Handle("GET /api/v1/cabinets/{id}", middleware.Auth(r.cfg)(http.HandlerFunc(r.getCabinet)))
+	r.mux.Handle("GET /api/v1/cabinets/{id}/onboarding-status", middleware.Auth(r.cfg)(http.HandlerFunc(r.getOnboardingStatus)))
+	r.mux.Handle("PATCH /api/v1/cabinets/{id}", middleware.Auth(r.cfg)(http.HandlerFunc(r.updateCabinet)))
 
 	// Clients
 	r.mux.HandleFunc("GET /api/v1/cabinets/{cabinet_id}/clients", r.listClients)
@@ -98,15 +146,17 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("GET /api/v1/clients/{id}", r.getClient)
 
 	// Pending Lines (471)
-	r.mux.HandleFunc("GET /api/v1/cabinets/{cabinet_id}/pending-lines", r.listPendingLines)
-	r.mux.HandleFunc("GET /api/v1/cabinets/{cabinet_id}/pending-lines/stats", r.getPendingLinesStats)
-	r.mux.HandleFunc("POST /api/v1/cabinets/{cabinet_id}/pending-lines", r.createPendingLine)
-	r.mux.HandleFunc("GET /api/v1/pending-lines/{id}", r.getPendingLine)
-	r.mux.HandleFunc("PATCH /api/v1/pending-lines/{id}", r.updatePendingLine)
+	// Pending Lines (Protected)
+	r.mux.Handle("GET /api/v1/cabinets/{cabinet_id}/pending-lines", middleware.Auth(r.cfg)(http.HandlerFunc(r.listPendingLines)))
+	r.mux.Handle("GET /api/v1/cabinets/{cabinet_id}/pending-lines/stats", middleware.Auth(r.cfg)(http.HandlerFunc(r.getPendingLinesStats)))
+	r.mux.Handle("POST /api/v1/cabinets/{cabinet_id}/pending-lines", middleware.Auth(r.cfg)(http.HandlerFunc(r.createPendingLine)))
+	r.mux.Handle("GET /api/v1/pending-lines/{id}", middleware.Auth(r.cfg)(http.HandlerFunc(r.getPendingLine)))
+	r.mux.Handle("PATCH /api/v1/pending-lines/{id}", middleware.Auth(r.cfg)(http.HandlerFunc(r.updatePendingLine)))
 
 	// Import - REAL IMPLEMENTATIONS
 	r.mux.HandleFunc("POST /api/v1/cabinets/{cabinet_id}/import/preview", r.previewCSV)
 	r.mux.HandleFunc("POST /api/v1/cabinets/{cabinet_id}/import/csv", r.importCSV)
+	r.mux.HandleFunc("POST /api/v1/cabinets/{cabinet_id}/import/clients", r.importClients)
 	r.mux.HandleFunc("GET /api/v1/import/{id}/status", r.getImportStatus)
 
 	// Messages
@@ -137,6 +187,13 @@ func (r *Router) registerRoutes() {
 	r.mux.HandleFunc("POST /api/v1/voice/generate", r.generateVoice)
 	r.mux.HandleFunc("GET /audio/{filename}", r.serveAudio)
 	r.mux.HandleFunc("GET /api/v1/documents/content/{filename}", r.serveDocument)
+
+	// Campaigns (Sprint 6)
+	r.mux.HandleFunc("GET /api/v1/campaigns", r.listCampaigns)
+	r.mux.HandleFunc("POST /api/v1/campaigns", r.createCampaign)
+	r.mux.HandleFunc("GET /api/v1/campaigns/{id}", r.getCampaign)
+	r.mux.HandleFunc("PATCH /api/v1/campaigns/{id}", r.updateCampaign)
+	r.mux.HandleFunc("DELETE /api/v1/campaigns/{id}", r.deleteCampaign)
 }
 
 // ============================================
@@ -151,22 +208,11 @@ func (r *Router) healthCheck(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-// ============================================
-// CABINET HANDLERS
-// ============================================
-
-func (r *Router) listCabinets(w http.ResponseWriter, req *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"cabinets": []any{}, "total": 0})
-}
-
-func (r *Router) createCabinet(w http.ResponseWriter, req *http.Request) {
-	writeJSON(w, http.StatusCreated, map[string]string{"message": "Cabinet created"})
-}
-
-func (r *Router) getCabinet(w http.ResponseWriter, req *http.Request) {
-	id := req.PathValue("id")
-	writeJSON(w, http.StatusOK, map[string]string{"id": id})
-}
+// Cabinet handlers are defined in cabinets.go
+// r.listCabinets
+// r.createCabinet
+// r.getCabinet
+// r.updateCabinet
 
 // ============================================
 // CLIENT HANDLERS
@@ -197,6 +243,13 @@ func (r *Router) listPendingLines(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Verify Cabinet Access
+	claimsCabinetID, ok := middleware.GetCabinetID(req.Context())
+	if !ok || claimsCabinetID != cabinetID {
+		writeError(w, http.StatusForbidden, "Access denied to this cabinet")
+		return
+	}
+
 	filter := repository.PendingLineFilter{
 		CabinetID: cabinetID,
 		Limit:     50,
@@ -221,6 +274,13 @@ func (r *Router) getPendingLinesStats(w http.ResponseWriter, req *http.Request) 
 	cabinetID, err := uuid.Parse(cabinetIDStr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid cabinet ID")
+		return
+	}
+
+	// Verify Cabinet Access
+	claimsCabinetID, ok := middleware.GetCabinetID(req.Context())
+	if !ok || claimsCabinetID != cabinetID {
+		writeError(w, http.StatusForbidden, "Access denied to this cabinet")
 		return
 	}
 
@@ -363,11 +423,38 @@ func (r *Router) importCSV(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Set source file on all lines
+	// Set source file and Auto-Match Clients
+	clientRepo := repository.NewClientRepository(r.db.Pool)
+	// Fetch all clients for efficient matching (MVP: fetch all)
+	// TODO: Optimize if client list > 1000
+	clientsList, err := clientRepo.List(req.Context(), repository.ClientFilter{CabinetID: cabinetID, Limit: 1000})
+	var clients []models.Client
+	if err == nil && clientsList != nil {
+		clients = clientsList.Items
+	}
+
 	for i := range result.Lines {
-		result.Lines[i].SourceFile = &header.Filename
-		rowNum := i + 2 // 1-indexed, skip header
-		result.Lines[i].SourceRowNumber = &rowNum
+		line := &result.Lines[i]
+		line.SourceFile = &header.Filename
+		rowNum := i + 2
+		line.SourceRowNumber = &rowNum
+
+		// Auto-Match Logic
+		if line.BankLabel != nil && len(clients) > 0 {
+			labelLower := strings.ToLower(*line.BankLabel)
+			for _, client := range clients {
+				clientNameLower := strings.ToLower(client.Name)
+				// Simple substring match: "PAIEMENT DARTY CB" contains "darty"
+				if strings.Contains(labelLower, clientNameLower) {
+					clientID := client.ID
+					line.ClientID = &clientID
+					// Mark as 'Contacted' if we have contact info?
+					// No, keep 'Pending' but now we have the link.
+					// Maybe we can check if client has email, we can start campaigns.
+					break // Take first match
+				}
+			}
+		}
 	}
 
 	// Insert lines in batch
@@ -387,6 +474,106 @@ func (r *Router) importCSV(w http.ResponseWriter, req *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, response)
+
+}
+
+func (r *Router) importClients(w http.ResponseWriter, req *http.Request) {
+	cabinetIDStr := req.PathValue("cabinet_id")
+	cabinetID, err := uuid.Parse(cabinetIDStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid cabinet ID")
+		return
+	}
+
+	if err := req.ParseMultipartForm(50 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid form data: "+err.Error())
+		return
+	}
+
+	file, _, err := req.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "No file provided")
+		return
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Failed to read file")
+		return
+	}
+
+	// Parse CSV
+	result, err := r.importer.ParseClientsCSV(req.Context(), data, cabinetID, nil)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Failed to parse CSV: "+err.Error())
+		return
+	}
+
+	clientRepo := repository.NewClientRepository(r.db.Pool)
+	stats := map[string]int{
+		"created": 0,
+		"updated": 0,
+		"skipped": 0,
+		"failed":  0,
+	}
+
+	for _, c := range result.Clients {
+		// Find or Create
+		existing, created, err := clientRepo.FindOrCreateByName(req.Context(), cabinetID, c.Name)
+		if err != nil {
+			stats["failed"]++
+			continue
+		}
+
+		if created {
+			// Created new client, now update extra fields if any
+			// FindOrCreate only sets Name. We need to update existing object with parsed data
+			// Wait, FindOrCreate creates with Name only.
+			// Let's update the created/found client with parsed fields
+			c.ID = existing.ID
+			c.CreatedAt = existing.CreatedAt
+			// If we created it, we can just use Update.
+			// If it existed, we merge carefully.
+
+			if err := clientRepo.Update(req.Context(), &c); err != nil {
+				stats["failed"]++
+			} else {
+				stats["created"]++
+			}
+		} else {
+			// MERGE: Update existing if we have new info and existing is empty
+			updated := false
+			if existing.Email == nil && c.Email != nil {
+				existing.Email = c.Email
+				updated = true
+			}
+			if existing.Phone == nil && c.Phone != nil {
+				existing.Phone = c.Phone
+				updated = true
+			}
+			if existing.SIRET == nil && c.SIRET != nil {
+				existing.SIRET = c.SIRET
+				updated = true
+			}
+
+			if updated {
+				if err := clientRepo.Update(req.Context(), existing); err != nil {
+					stats["failed"]++
+				} else {
+					stats["updated"]++
+				}
+			} else {
+				stats["skipped"]++
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"total_rows": result.TotalRows,
+		"stats":      stats,
+		"errors":     result.Errors,
+	})
 }
 
 func (r *Router) getImportStatus(w http.ResponseWriter, req *http.Request) {

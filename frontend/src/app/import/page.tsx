@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import Link from 'next/link';
+import { useAuth } from '@/context/AuthContext';
 
 interface PreviewData {
     filename: string;
@@ -51,7 +52,8 @@ export default function ImportPage() {
         label_column: 0,
     });
 
-    const cabinetId = '00000000-0000-0000-0000-000000000001';
+    const { user } = useAuth();
+    const cabinetId = user?.cabinet_id || '00000000-0000-0000-0000-000000000001';
 
     const handleDrag = useCallback((e: React.DragEvent) => {
         e.preventDefault();

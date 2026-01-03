@@ -56,11 +56,35 @@ type ImportError struct {
 
 // ColumnMapping defines how CSV columns map to pending line fields
 type ColumnMapping struct {
-	AmountColumn    int `json:"amount_column"`
-	DateColumn      int `json:"date_column"`
-	LabelColumn     int `json:"label_column"`
-	ClientColumn    int `json:"client_column,omitempty"`    // Optional
-	AccountColumn   int `json:"account_column,omitempty"`   // Optional
+	AmountColumn  int `json:"amount_column"`
+	DateColumn    int `json:"date_column"`
+	LabelColumn   int `json:"label_column"`
+	ClientColumn  int `json:"client_column,omitempty"`  // Optional
+	AccountColumn int `json:"account_column,omitempty"` // Optional
+}
+
+// ClientColumnMapping defines how CSV columns map to client fields
+type ClientColumnMapping struct {
+	NameColumn  int `json:"name_column"`
+	EmailColumn int `json:"email_column"`
+	PhoneColumn int `json:"phone_column"`
+	SiretColumn int `json:"siret_column"`
+}
+
+// ClientImportResult contains the result of a client import operation
+type ClientImportResult struct {
+	TotalRows    int             `json:"total_rows"`
+	ImportedRows int             `json:"imported_rows"`
+	FailedRows   int             `json:"failed_rows"`
+	Errors       []ImportError   `json:"errors,omitempty"`
+	Clients      []models.Client `json:"clients"`
+}
+
+// DetectedClientColumns represents auto-detected client column mappings
+type DetectedClientColumns struct {
+	Mapping    ClientColumnMapping `json:"mapping"`
+	Confidence float64             `json:"confidence"`
+	Headers    []string            `json:"headers"`
 }
 
 // DetectedColumns represents auto-detected column mappings
@@ -321,7 +345,7 @@ func (i *CSVImporter) ensureUTF8(data []byte) []byte {
 // detectDelimiter detects the CSV delimiter from the first few lines
 func (i *CSVImporter) detectDelimiter(data []byte) rune {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
-	
+
 	delimiters := []rune{';', ',', '\t', '|'}
 	counts := make(map[rune]int)
 
@@ -369,7 +393,7 @@ func (i *CSVImporter) ValidateMapping(headers []string, mapping ColumnMapping) e
 func FormatAmount(d decimal.Decimal) string {
 	// French format with space thousands separator and comma decimal
 	s := d.StringFixed(2)
-	
+
 	parts := strings.Split(s, ".")
 	intPart := parts[0]
 	decPart := parts[1]
@@ -395,4 +419,149 @@ func FormatAmount(d decimal.Decimal) string {
 	}
 
 	return formatted + " €"
+}
+
+// ParseClientsCSV parses a CSV file and returns clients
+func (i *CSVImporter) ParseClientsCSV(ctx context.Context, data []byte, cabinetID uuid.UUID, mapping *ClientColumnMapping) (*ClientImportResult, error) {
+	data = i.ensureUTF8(data)
+	delimiter := i.detectDelimiter(data)
+
+	reader := csv.NewReader(bytes.NewReader(data))
+	reader.Comma = delimiter
+	reader.LazyQuotes = true
+	reader.TrimLeadingSpace = true
+
+	records, err := reader.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse CSV: %w", err)
+	}
+
+	if len(records) < 2 {
+		return nil, fmt.Errorf("CSV must have at least a header row and one data row")
+	}
+
+	if mapping == nil {
+		detected := i.DetectClientColumns(records[0])
+		mapping = &detected.Mapping
+	}
+
+	result := &ClientImportResult{
+		TotalRows: len(records) - 1,
+		Clients:   make([]models.Client, 0, len(records)-1),
+		Errors:    make([]ImportError, 0),
+	}
+
+	for rowIdx, record := range records[1:] {
+		client, err := i.parseClientRow(record, rowIdx+2, cabinetID, mapping)
+		if err != nil {
+			result.Errors = append(result.Errors, ImportError{
+				Row:     rowIdx + 2,
+				Message: err.Error(),
+			})
+			result.FailedRows++
+			continue
+		}
+
+		result.Clients = append(result.Clients, *client)
+		result.ImportedRows++
+	}
+
+	return result, nil
+}
+
+// DetectClientColumns attempts to auto-detect client column mappings
+func (i *CSVImporter) DetectClientColumns(headers []string) DetectedClientColumns {
+	result := DetectedClientColumns{
+		Headers: headers,
+		Mapping: ClientColumnMapping{
+			NameColumn:  -1,
+			EmailColumn: -1,
+			PhoneColumn: -1,
+			SiretColumn: -1,
+		},
+		Confidence: 0,
+	}
+
+	namePatterns := regexp.MustCompile(`(?i)(nom|name|raison.?sociale|societe|client|company)`)
+	emailPatterns := regexp.MustCompile(`(?i)(email|mail|courriel)`)
+	phonePatterns := regexp.MustCompile(`(?i)(tel|phone|mobile|portable|fixe)`)
+	siretPatterns := regexp.MustCompile(`(?i)(siret|siren|tva|no.?vat)`)
+
+	matches := 0
+	for idx, header := range headers {
+		headerLower := strings.ToLower(strings.TrimSpace(header))
+
+		if result.Mapping.NameColumn == -1 && namePatterns.MatchString(headerLower) {
+			result.Mapping.NameColumn = idx
+			matches++
+		} else if result.Mapping.EmailColumn == -1 && emailPatterns.MatchString(headerLower) {
+			result.Mapping.EmailColumn = idx
+			matches++
+		} else if result.Mapping.PhoneColumn == -1 && phonePatterns.MatchString(headerLower) {
+			result.Mapping.PhoneColumn = idx
+			matches++
+		} else if result.Mapping.SiretColumn == -1 && siretPatterns.MatchString(headerLower) {
+			result.Mapping.SiretColumn = idx
+			matches++
+		}
+	}
+
+	requiredFields := 1 // Name is required
+	result.Confidence = float64(matches) / float64(requiredFields)
+	if result.Confidence > 1 {
+		result.Confidence = 1
+	}
+
+	// Positional defaults
+	if result.Mapping.NameColumn == -1 && len(headers) > 0 {
+		result.Mapping.NameColumn = 0
+	}
+	if result.Mapping.EmailColumn == -1 && len(headers) > 1 {
+		result.Mapping.EmailColumn = 1
+	}
+
+	return result
+}
+
+func (i *CSVImporter) parseClientRow(record []string, rowNum int, cabinetID uuid.UUID, mapping *ClientColumnMapping) (*models.Client, error) {
+	if mapping.NameColumn < 0 || mapping.NameColumn >= len(record) {
+		return nil, fmt.Errorf("missing name column")
+	}
+
+	name := strings.TrimSpace(record[mapping.NameColumn])
+	if name == "" {
+		return nil, fmt.Errorf("empty name")
+	}
+
+	client := &models.Client{
+		ID:        uuid.New(),
+		CabinetID: cabinetID,
+		Name:      name,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	if mapping.EmailColumn >= 0 && mapping.EmailColumn < len(record) {
+		email := strings.TrimSpace(record[mapping.EmailColumn])
+		if email != "" {
+			client.Email = &email
+		}
+	}
+
+	if mapping.PhoneColumn >= 0 && mapping.PhoneColumn < len(record) {
+		phone := strings.TrimSpace(record[mapping.PhoneColumn])
+		// Basic phone cleaning (keep +, digits)
+		if phone != "" {
+			client.Phone = &phone
+		}
+	}
+
+	if mapping.SiretColumn >= 0 && mapping.SiretColumn < len(record) {
+		siret := strings.TrimSpace(record[mapping.SiretColumn])
+		if siret != "" {
+			client.SIRET = &siret
+		}
+	}
+
+	return client, nil
 }

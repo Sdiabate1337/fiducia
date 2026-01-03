@@ -5,9 +5,11 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
     Search, Filter, Receipt, Upload, Settings,
     AlertCircle, CheckCircle2, Clock, Send, XCircle,
-    ArrowUpRight, MoreHorizontal, ChevronDown, Download
+    ArrowUpRight, MoreHorizontal, ChevronDown, Download, LogOut, ArrowRight
 } from 'lucide-react';
 import Link from 'next/link';
+import { useAuth } from '@/context/AuthContext';
+import { useRouter } from 'next/navigation';
 
 // --- Types ---
 
@@ -22,6 +24,9 @@ interface PendingLine {
         name: string;
         phone: string | null;
     };
+    campaign_status?: string;
+    campaign_current_step?: number;
+    next_step_scheduled_at?: string;
 }
 
 interface Stats {
@@ -98,44 +103,138 @@ const VelocityCard = ({ stats, formatAmount }: { stats: Stats, formatAmount: (a:
     </div>
 );
 
+interface OnboardingStatus {
+    has_clients: boolean;
+    client_count: number;
+    has_lines: boolean;
+    line_count: number;
+    voice_configured: boolean;
+}
+
+const SetupWrapper = ({ status, onClose }: { status: OnboardingStatus, onClose: () => void }) => {
+    // Determine progress
+    const steps = [
+        { key: 'clients', label: "Importer le carnet d'adresses", done: status.has_clients, link: '/onboarding?step=2' },
+        { key: 'lines', label: "Importer le Grand Livre (471)", done: status.has_lines, link: '/import' },
+        { key: 'voice', label: "Calibrer sa voix IA", done: status.voice_configured, link: '/settings?tab=voice' },
+    ];
+    const progress = steps.filter(s => s.done).length;
+    const total = steps.length;
+    const isComplete = progress === total;
+
+    if (isComplete) return null;
+
+    return (
+        <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="mb-8 bg-white rounded-2xl border border-[#1A1A1A]/10 p-6 shadow-xl shadow-[#1A1A1A]/5 relative overflow-hidden"
+        >
+            <div className="absolute top-0 left-0 w-1 h-full bg-[#F59E0B]" />
+            <div className="flex flex-col md:flex-row justify-between md:items-center gap-6">
+                <div>
+                    <h3 className="text-xl font-serif font-bold text-[#1A1A1A] mb-2">Bienvenue sur Fiducia</h3>
+                    <p className="text-[#1A1A1A]/60 max-w-lg">
+                        Votre espace n'est pas encore totalement configuré. Suivez ces étapes pour activer le pilotage automatique.
+                    </p>
+                    <div className="mt-4 flex items-center gap-2">
+                        <div className="h-2 w-32 bg-[#1A1A1A]/10 rounded-full overflow-hidden">
+                            <div className="h-full bg-[#F59E0B]" style={{ width: `${(progress / total) * 100}%` }} />
+                        </div>
+                        <span className="text-xs font-bold text-[#1A1A1A]/60">{progress}/{total} étapes</span>
+                    </div>
+                </div>
+
+                <div className="grid gap-3">
+                    {steps.map((step, i) => (
+                        <Link
+                            key={step.key}
+                            href={step.link}
+                            className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${step.done
+                                ? 'bg-[#1A4D2E]/5 border-[#1A4D2E]/10 text-[#1A4D2E]'
+                                : 'bg-white border-[#1A1A1A]/10 text-[#1A1A1A] hover:border-[#1A1A1A]/30 hover:shadow-sm'
+                                }`}
+                        >
+                            <div className={`w-6 h-6 rounded-full flex items-center justify-center border ${step.done ? 'bg-[#1A4D2E] border-[#1A4D2E] text-white' : 'border-[#1A1A1A]/20 text-[#1A1A1A]/40'
+                                }`}>
+                                {step.done ? <CheckCircle2 size={14} /> : <span className="text-xs font-bold">{i + 1}</span>}
+                            </div>
+                            <span className={`text-sm font-medium ${step.done ? 'line-through opacity-60' : ''}`}>{step.label}</span>
+                            {!step.done && <ArrowRight size={14} className="ml-auto opacity-40" >
+                                <ArrowRight size={14} />
+                            </ArrowRight>}
+                        </Link>
+                    ))}
+                </div>
+            </div>
+
+            <button
+                onClick={onClose}
+                className="absolute top-4 right-4 text-[#1A1A1A]/20 hover:text-[#1A1A1A] transition-colors"
+            >
+                <XCircle size={20} />
+            </button>
+        </motion.div>
+    );
+};
+
 // --- Page ---
 
 export default function DashboardPage() {
+    const { logout, user, token } = useAuth();
     const [lines, setLines] = useState<PendingLine[]>([]);
     const [stats, setStats] = useState<Stats | null>(null);
     const [loading, setLoading] = useState(true);
     const [statusFilter, setStatusFilter] = useState<string>('all');
     const [search, setSearch] = useState('');
     const [isFilterMenuOpen, setIsFilterMenuOpen] = useState(false);
+    const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
+    const [onboardingStatus, setOnboardingStatus] = useState<OnboardingStatus | null>(null);
+    const [showSetup, setShowSetup] = useState(true);
 
     const toggleFilterMenu = () => setIsFilterMenuOpen(!isFilterMenuOpen);
+    const toggleProfileMenu = () => setIsProfileMenuOpen(!isProfileMenuOpen);
 
     const selectFilter = (status: string) => {
         setStatusFilter(status);
         setIsFilterMenuOpen(false);
     };
 
-    // Demo cabinet ID
-    const cabinetId = '00000000-0000-0000-0000-000000000001';
+    // Demo cabinet ID or real one
+    const cabinetId = user?.cabinet_id || '00000000-0000-0000-0000-000000000001';
 
     useEffect(() => {
-        fetchData();
-    }, [statusFilter, search]);
+        if (token) fetchData();
+    }, [statusFilter, search, token]);
 
     const fetchData = async () => {
         setLoading(true);
         try {
-            const statsRes = await fetch(`/api/v1/cabinets/${cabinetId}/pending-lines/stats`);
+            const statsRes = await fetch(`/api/v1/cabinets/${cabinetId}/pending-lines/stats`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
             if (statsRes.ok) {
                 const data = await statsRes.json();
                 setStats(data);
+            }
+
+            // Fetch Onboarding Status
+            const statusRes = await fetch(`/api/v1/cabinets/${cabinetId}/onboarding-status`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (statusRes.ok) {
+                const statusData = await statusRes.json();
+                setOnboardingStatus(statusData);
             }
 
             let url = `/api/v1/cabinets/${cabinetId}/pending-lines?limit=50`;
             if (statusFilter !== 'all') url += `&status=${statusFilter}`;
             if (search) url += `&search=${encodeURIComponent(search)}`;
 
-            const linesRes = await fetch(url);
+            const linesRes = await fetch(url, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
             if (linesRes.ok) {
                 const linesData: ListResponse = await linesRes.json();
                 let items = linesData.items || [];
@@ -201,8 +300,38 @@ export default function DashboardPage() {
                     <Link href="/settings" className="p-2 text-[#1A1A1A]/40 hover:text-[#1A1A1A] transition-colors">
                         <Settings size={20} />
                     </Link>
-                    <div className="w-8 h-8 rounded-full bg-[#1A1A1A] text-white flex items-center justify-center font-serif text-sm">
-                        JD
+                    <div className="relative">
+                        <button
+                            onClick={toggleProfileMenu}
+                            className="w-8 h-8 rounded-full bg-[#1A1A1A] text-white flex items-center justify-center font-serif text-sm hover:ring-2 hover:ring-[#1A1A1A]/20 transition-all"
+                        >
+                            {user?.full_name ? user.full_name.charAt(0).toUpperCase() : 'JD'}
+                        </button>
+
+                        <AnimatePresence>
+                            {isProfileMenuOpen && (
+                                <motion.div
+                                    initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                                    exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                                    className="absolute top-full right-0 mt-2 w-48 bg-white rounded-xl shadow-xl border border-[#1A1A1A]/5 z-50 overflow-hidden origin-top-right"
+                                >
+                                    <div className="p-1">
+                                        <div className="px-4 py-3 border-b border-[#1A1A1A]/5 mb-1">
+                                            <p className="text-sm font-bold text-[#1A1A1A] truncate">{user?.full_name}</p>
+                                            <p className="text-xs text-[#1A1A1A]/40 truncate">{user?.email}</p>
+                                        </div>
+                                        <button
+                                            onClick={logout}
+                                            className="w-full text-left px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 rounded-lg transition-colors flex items-center gap-2"
+                                        >
+                                            <LogOut size={14} />
+                                            Déconnexion
+                                        </button>
+                                    </div>
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
                     </div>
                 </div>
             </nav>
@@ -218,6 +347,13 @@ export default function DashboardPage() {
                         Importer un relevé
                     </Link>
                 </div>
+
+                {/* Setup Guide */}
+                <AnimatePresence>
+                    {showSetup && onboardingStatus && (
+                        <SetupWrapper status={onboardingStatus} onClose={() => setShowSetup(false)} />
+                    )}
+                </AnimatePresence>
 
                 {/* Stats Grid */}
                 {stats && (
@@ -401,6 +537,7 @@ export default function DashboardPage() {
                                             <th className="px-8 py-5 text-left text-xs font-semibold text-[#1A1A1A]/40 uppercase tracking-wider">Client</th>
                                             <th className="px-8 py-5 text-left text-xs font-semibold text-[#1A1A1A]/40 uppercase tracking-wider">Montant</th>
                                             <th className="px-8 py-5 text-left text-xs font-semibold text-[#1A1A1A]/40 uppercase tracking-wider">Statut</th>
+                                            <th className="px-8 py-5 text-left text-xs font-semibold text-[#1A1A1A]/40 uppercase tracking-wider">Relance</th>
                                             <th className="px-8 py-5 text-right text-xs font-semibold text-[#1A1A1A]/40 uppercase tracking-wider">Action</th>
                                         </tr>
                                     </thead>
@@ -437,6 +574,22 @@ export default function DashboardPage() {
                                                 </td>
                                                 <td className="px-8 py-6">
                                                     <StatusBadge status={line.status} />
+                                                </td>
+                                                <td className="px-8 py-6">
+                                                    {line.campaign_status ? (
+                                                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${line.campaign_status === 'running' ? 'bg-blue-100 text-blue-800' :
+                                                            line.campaign_status === 'stopped' ? 'bg-red-100 text-red-800' :
+                                                                line.campaign_status === 'completed' ? 'bg-green-100 text-green-800' :
+                                                                    'bg-gray-100 text-gray-800'
+                                                            }`}>
+                                                            {line.campaign_status === 'running' ? `En cours (Etape ${line.campaign_current_step || 1})` :
+                                                                line.campaign_status === 'stopped' ? 'Stoppé' :
+                                                                    line.campaign_status === 'completed' ? 'Terminé' :
+                                                                        'En attente'}
+                                                        </span>
+                                                    ) : (
+                                                        <span className="text-gray-300">-</span>
+                                                    )}
                                                 </td>
                                                 <td className="px-8 py-6 text-right">
                                                     <Link

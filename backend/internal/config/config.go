@@ -33,6 +33,9 @@ type Config struct {
 
 	// OpenAI (GPT-4o-mini Vision)
 	OpenAIAPIKey string
+
+	// Auth
+	JWTSecret string
 }
 
 // Load reads configuration from environment variables
@@ -53,6 +56,7 @@ func Load() (*Config, error) {
 		ElevenLabsAPIKey:  getEnv("ELEVENLABS_API_KEY", ""),
 		ElevenLabsVoiceID: getEnv("ELEVENLABS_VOICE_ID", ""), // Can be set after cloning
 		OpenAIAPIKey:      getEnv("OPENAI_API_KEY", ""),
+		JWTSecret:         getEnv("JWT_SECRET", "fiducia-secret-dev-key-change-in-prod"),
 	}
 
 	// Validate required config in production

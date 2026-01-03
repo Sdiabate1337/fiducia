@@ -9,29 +9,30 @@ import (
 
 // Cabinet represents an accounting firm (tenant)
 type Cabinet struct {
-	ID        uuid.UUID         `json:"id"`
-	Name      string            `json:"name"`
-	SIRET     *string           `json:"siret,omitempty"`
-	Email     *string           `json:"email,omitempty"`
-	Phone     *string           `json:"phone,omitempty"`
-	Address   *string           `json:"address,omitempty"`
-	Settings  map[string]any    `json:"settings"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	ID                  uuid.UUID      `json:"id"`
+	Name                string         `json:"name"`
+	SIRET               *string        `json:"siret,omitempty"`
+	Email               *string        `json:"email,omitempty"`
+	Phone               *string        `json:"phone,omitempty"`
+	Address             *string        `json:"address,omitempty"`
+	Settings            map[string]any `json:"settings"`
+	OnboardingCompleted bool           `json:"onboarding_completed"`
+	CreatedAt           time.Time      `json:"created_at"`
+	UpdatedAt           time.Time      `json:"updated_at"`
 }
 
 // Collaborator represents a cabinet employee
 type Collaborator struct {
-	ID             uuid.UUID  `json:"id"`
-	CabinetID      uuid.UUID  `json:"cabinet_id"`
-	Email          string     `json:"email"`
-	Name           string     `json:"name"`
-	Role           string     `json:"role"`
-	VoiceID        *string    `json:"voice_id,omitempty"`
-	VoiceSampleURL *string    `json:"voice_sample_url,omitempty"`
-	IsActive       bool       `json:"is_active"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ID             uuid.UUID `json:"id"`
+	CabinetID      uuid.UUID `json:"cabinet_id"`
+	Email          string    `json:"email"`
+	Name           string    `json:"name"`
+	Role           string    `json:"role"`
+	VoiceID        *string   `json:"voice_id,omitempty"`
+	VoiceSampleURL *string   `json:"voice_sample_url,omitempty"`
+	IsActive       bool      `json:"is_active"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // Client represents a cabinet's client
@@ -85,6 +86,11 @@ type PendingLine struct {
 
 	// Relations (populated via joins)
 	Client *Client `json:"client,omitempty"`
+
+	// Enriched Fields (Campaign Status)
+	CampaignStatus      *string    `json:"campaign_status,omitempty"`
+	NextStepScheduledAt *time.Time `json:"next_step_scheduled_at,omitempty"`
+	CampaignCurrentStep *int       `json:"campaign_current_step,omitempty"`
 }
 
 // ImportBatch represents a CSV import batch

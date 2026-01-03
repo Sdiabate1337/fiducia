@@ -61,9 +61,11 @@ func (r *PendingLineRepository) List(ctx context.Context, filter PendingLineFilt
 			pl.bank_label, pl.account_number, pl.import_batch_id, pl.source_file,
 			pl.source_row_number, pl.status, pl.last_contacted_at, pl.contact_count,
 			pl.assigned_to, pl.created_at, pl.updated_at,
-			c.id as client_id, c.name as client_name, c.phone as client_phone
+			c.id as client_id, c.name as client_name, c.phone as client_phone,
+			ce.status as campaign_status, ce.next_step_scheduled_at, ce.current_step_order
 		FROM pending_lines pl
 		LEFT JOIN clients c ON pl.client_id = c.id
+		LEFT JOIN campaign_executions ce ON pl.id = ce.pending_line_id AND ce.status IN ('pending', 'running', 'stopped', 'completed')
 		WHERE pl.cabinet_id = $1
 	`
 
@@ -158,6 +160,7 @@ func (r *PendingLineRepository) List(ctx context.Context, filter PendingLineFilt
 			&pl.SourceRowNumber, &pl.Status, &pl.LastContactedAt, &pl.ContactCount,
 			&pl.AssignedTo, &pl.CreatedAt, &pl.UpdatedAt,
 			&clientID, &clientName, &clientPhone,
+			&pl.CampaignStatus, &pl.NextStepScheduledAt, &pl.CampaignCurrentStep,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan pending line: %w", err)

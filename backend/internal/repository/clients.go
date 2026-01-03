@@ -333,3 +333,13 @@ func (r *ClientRepository) FindOrCreateByName(ctx context.Context, cabinetID uui
 
 	return &c, true, nil // Created new
 }
+
+// Count returns the total number of clients for a cabinet
+func (r *ClientRepository) Count(ctx context.Context, cabinetID uuid.UUID) (int, error) {
+	var count int
+	err := r.pool.QueryRow(ctx, "SELECT COUNT(*) FROM clients WHERE cabinet_id = $1", cabinetID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count clients: %w", err)
+	}
+	return count, nil
+}

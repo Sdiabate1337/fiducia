@@ -55,6 +55,13 @@ func main() {
 		middleware.CORS(cfg.AllowedOrigins),
 	)
 
+	// Create root context for background workers
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start Campaign Worker
+	router.StartCampaignWorker(ctx)
+
 	// Create server
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
@@ -79,10 +86,11 @@ func main() {
 	<-quit
 
 	slog.Info("shutting down server...")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	slog.Info("shutting down server...")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
 
-	if err := server.Shutdown(ctx); err != nil {
+	if err := server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("server forced to shutdown", "error", err)
 	}
 
