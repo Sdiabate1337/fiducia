@@ -180,3 +180,29 @@ func (r *CampaignRepository) Delete(ctx context.Context, id uuid.UUID) error {
 	}
 	return nil
 }
+
+// ListAllActive returns all active campaigns across all cabinets
+func (r *CampaignRepository) ListAllActive(ctx context.Context) ([]models.Campaign, error) {
+	rows, err := r.pool.Query(ctx, `
+        SELECT id, cabinet_id, name, trigger_type, is_active, quiet_hours_enabled, created_at, updated_at
+        FROM campaigns WHERE is_active = true
+    `)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var campaigns []models.Campaign
+	for rows.Next() {
+		var c models.Campaign
+		if err := rows.Scan(&c.ID, &c.CabinetID, &c.Name, &c.TriggerType, &c.IsActive, &c.QuietHoursEnabled, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		// Also fetch steps? For now, we fetch steps only when processing execution to save memory,
+		// OR we simply fetch steps here. The executeCampaignCycle logic fetches campaign details again later via GetByID in pass 2,
+		// but for pass 1 (Enrollment), it uses the list.
+		// Let's keep it lightweight.
+		campaigns = append(campaigns, c)
+	}
+	return campaigns, nil
+}

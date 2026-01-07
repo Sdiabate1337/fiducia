@@ -141,9 +141,12 @@ func (r *Router) registerRoutes() {
 	r.mux.Handle("PATCH /api/v1/cabinets/{id}", middleware.Auth(r.cfg)(http.HandlerFunc(r.updateCabinet)))
 
 	// Clients
-	r.mux.HandleFunc("GET /api/v1/cabinets/{cabinet_id}/clients", r.listClients)
-	r.mux.HandleFunc("POST /api/v1/cabinets/{cabinet_id}/clients", r.createClient)
-	r.mux.HandleFunc("GET /api/v1/clients/{id}", r.getClient)
+	r.mux.Handle("GET /api/v1/cabinets/{cabinet_id}/clients", middleware.Auth(r.cfg)(http.HandlerFunc(r.listClients)))
+	r.mux.Handle("POST /api/v1/cabinets/{cabinet_id}/clients", middleware.Auth(r.cfg)(http.HandlerFunc(r.createClient)))
+	r.mux.Handle("GET /api/v1/clients/{id}", middleware.Auth(r.cfg)(http.HandlerFunc(r.getClient)))
+	r.mux.Handle("PATCH /api/v1/clients/{id}", middleware.Auth(r.cfg)(http.HandlerFunc(r.updateClient)))
+	r.mux.Handle("DELETE /api/v1/clients/{id}", middleware.Auth(r.cfg)(http.HandlerFunc(r.deleteClient)))
+	r.mux.Handle("GET /api/v1/clients/{id}/pending-lines", middleware.Auth(r.cfg)(http.HandlerFunc(r.listClientPendingLines)))
 
 	// Pending Lines (471)
 	// Pending Lines (Protected)
@@ -215,21 +218,7 @@ func (r *Router) healthCheck(w http.ResponseWriter, req *http.Request) {
 // r.updateCabinet
 
 // ============================================
-// CLIENT HANDLERS
 // ============================================
-
-func (r *Router) listClients(w http.ResponseWriter, req *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
-}
-
-func (r *Router) createClient(w http.ResponseWriter, req *http.Request) {
-	writeJSON(w, http.StatusCreated, map[string]string{"message": "Client created"})
-}
-
-func (r *Router) getClient(w http.ResponseWriter, req *http.Request) {
-	id := req.PathValue("id")
-	writeJSON(w, http.StatusOK, map[string]string{"id": id})
-}
 
 // ============================================
 // PENDING LINES HANDLERS
@@ -317,10 +306,70 @@ func (r *Router) getPendingLine(w http.ResponseWriter, req *http.Request) {
 
 	writeJSON(w, http.StatusOK, line)
 }
+func (r *Router) listClientPendingLines(w http.ResponseWriter, req *http.Request) {
+	idStr := req.PathValue("id")
+	clientID, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid Client ID")
+		return
+	}
 
+	lines, err := r.lineRepo.ListByClient(req.Context(), clientID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to fetch lines")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": lines,
+		"total": len(lines),
+	})
+}
 func (r *Router) updatePendingLine(w http.ResponseWriter, req *http.Request) {
-	id := req.PathValue("id")
-	writeJSON(w, http.StatusOK, map[string]string{"id": id, "message": "Updated"})
+	idStr := req.PathValue("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid ID format")
+		return
+	}
+
+	var payload struct {
+		ClientID *uuid.UUID `json:"client_id"`
+		Status   *string    `json:"status"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	ctx := req.Context()
+	line, err := r.lineRepo.GetByID(ctx, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to fetch line")
+		return
+	}
+	if line == nil {
+		writeError(w, http.StatusNotFound, "Pending line not found")
+		return
+	}
+
+	if payload.ClientID != nil {
+		line.ClientID = payload.ClientID
+		// Also ensure status isn't "validated" if we are just assigning?
+		// Or if unassigned, maybe set to pending?
+		// For now, trust the payload or keep existing status unless explicitly changed.
+	}
+	if payload.Status != nil {
+		// todo: validate status enum
+		line.Status = models.PendingLineStatus(*payload.Status)
+	}
+
+	if err := r.lineRepo.Update(ctx, line); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to update line")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, line)
 }
 
 // ============================================
@@ -503,8 +552,17 @@ func (r *Router) importClients(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Parse optional mapping from form field
+	var mapping *services.ClientColumnMapping
+	if mappingJSON := req.FormValue("mapping"); mappingJSON != "" {
+		if err := json.Unmarshal([]byte(mappingJSON), &mapping); err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid mapping JSON")
+			return
+		}
+	}
+
 	// Parse CSV
-	result, err := r.importer.ParseClientsCSV(req.Context(), data, cabinetID, nil)
+	result, err := r.importer.ParseClientsCSV(req.Context(), data, cabinetID, mapping)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "Failed to parse CSV: "+err.Error())
 		return
@@ -566,6 +624,54 @@ func (r *Router) importClients(w http.ResponseWriter, req *http.Request) {
 			} else {
 				stats["skipped"]++
 			}
+		}
+	}
+
+	// RETRO-ACTIVE MATCHING
+	// Search for all unassigned pending lines and try to match with the newly imported clients
+	// For efficiency in this MVP, we'll fetch unassigned lines and try to match against ALL clients (or just the imported ones).
+	// Let's fetch unassigned lines first.
+	statusPending := models.StatusPending
+	unassignedLines, err := r.lineRepo.List(req.Context(), repository.PendingLineFilter{
+		CabinetID: cabinetID,
+		Status:    &statusPending,
+		Limit:     1000, // Process batch
+	})
+
+	if err == nil && unassignedLines != nil {
+		updatesCount := 0
+		allClients, _ := clientRepo.List(req.Context(), repository.ClientFilter{CabinetID: cabinetID, Limit: 1000})
+
+		if allClients != nil {
+			slog.Info("Loaded Clients for Matching", "client_count", len(allClients.Items))
+
+			for _, line := range unassignedLines.Items {
+				if line.ClientID != nil {
+					continue // Already assigned
+				}
+				if line.BankLabel == nil {
+					continue
+				}
+
+				for _, client := range allClients.Items {
+					// Use Smart Matching Utility
+					if services.CalculateClientMatchScore(client.Name, *line.BankLabel) {
+						slog.Info("Match Found via Smart Scan", "line_id", line.ID, "label", *line.BankLabel, "client", client.Name)
+
+						clientID := client.ID
+						line.ClientID = &clientID
+
+						// Update the line
+						if err := r.lineRepo.Update(req.Context(), &line); err == nil {
+							updatesCount++
+						} else {
+							slog.Error("Failed to update matched line", "error", err)
+						}
+						break // Move to next line (one match is enough)
+					}
+				}
+			}
+			slog.Info("Retro-active matching validation finished", "total_matches", updatesCount)
 		}
 	}
 

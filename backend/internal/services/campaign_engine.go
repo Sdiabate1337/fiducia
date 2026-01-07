@@ -77,11 +77,8 @@ func (e *CampaignEngine) ExecuteCampaignCycle(ctx context.Context) error {
 	slog.Info("Running campaign cycle...")
 
 	// 1. Get all active campaigns
-	// For MVP we can just iterate over all cabinets via some method or just assume one cabinet/campaign context if triggered per cabinet.
-	// BETTER: Just list ALL active campaigns across all cabinets. But repo.List takes cabinetID.
-	// Hack for MVP: Hardcode the Demo Cabinet ID or add a ListAllActive to repo.
-	demoCabinetID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
-	campaigns, err := e.campaignRepo.List(ctx, demoCabinetID)
+	// 1. Get all active campaigns across ALL cabinets
+	campaigns, err := e.campaignRepo.ListAllActive(ctx)
 	if err != nil {
 		return err
 	}

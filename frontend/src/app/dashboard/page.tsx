@@ -342,10 +342,16 @@ export default function DashboardPage() {
                         <h1 className="text-3xl md:text-4xl font-serif mb-2 text-[#1A1A1A]">Vue d'ensemble</h1>
                         <p className="text-[#1A1A1A]/60 text-sm md:text-base">Gérez vos flux et pilotez la performance du cabinet.</p>
                     </div>
-                    <Link href="/import" className="w-full md:w-auto px-6 py-3 bg-[#1A1A1A] text-white rounded-xl font-medium hover:bg-[#1A4D2E] transition-all flex items-center justify-center gap-2 shadow-lg hover:shadow-xl">
-                        <Upload size={18} />
-                        Importer un relevé
-                    </Link>
+                    <div className="flex flex-col md:flex-row gap-3 w-full md:w-auto">
+                        <Link href="/import/clients" className="w-full md:w-auto px-6 py-3 bg-white border border-[#1A1A1A]/10 text-[#1A1A1A] rounded-xl font-medium hover:bg-[#F9F8F6] transition-all flex items-center justify-center gap-2 shadow-sm hover:shadow-md">
+                            <Upload size={18} />
+                            Importer des clients
+                        </Link>
+                        <Link href="/import" className="w-full md:w-auto px-6 py-3 bg-[#1A1A1A] text-white rounded-xl font-medium hover:bg-[#1A4D2E] transition-all flex items-center justify-center gap-2 shadow-lg hover:shadow-xl">
+                            <Upload size={18} />
+                            Importer un relevé
+                        </Link>
+                    </div>
                 </div>
 
                 {/* Setup Guide */}

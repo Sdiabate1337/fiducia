@@ -7,10 +7,13 @@ import {
     ArrowLeft, Send, Mic, MessageSquare, FileText, CheckCircle2,
     AlertTriangle, Calendar, Euro, Building2, Hash, Clock,
     ChevronRight, Paperclip, Download, Maximize2, Shield, Eye,
-    Search, Settings, MessageCircle, Layout, Layers
+    Search, Settings, MessageCircle, Layout, Layers, UserPlus, Pencil, User
 } from 'lucide-react';
 import Link from 'next/link';
-import { cn } from '@/lib/utils'; // Assuming cn utility exists or I will implement inline
+import { cn } from '@/lib/utils';
+import { useAuth } from '@/context/AuthContext';
+import { EditClientModal } from '@/components/clients/EditClientModal';
+import { AssignClientModal } from '@/components/clients/AssignClientModal';
 
 // --- Types ---
 
@@ -36,6 +39,7 @@ interface PendingLine {
         id: string;
         name: string;
         phone: string | null;
+        email?: string;
     };
 }
 
@@ -80,6 +84,7 @@ const StatusBadge = ({ status }: { status: string }) => {
 };
 
 export default function PendingLineDetailPage() {
+    const { user, token } = useAuth();
     const params = useParams();
     const router = useRouter();
     const id = params.id as string;
@@ -94,12 +99,16 @@ export default function PendingLineDetailPage() {
     const [messageType, setMessageType] = useState<'text' | 'voice'>('text');
     const [activeTab, setActiveTab] = useState<'history' | 'action'>('action');
 
+    // Modals
+    const [isEditClientOpen, setIsEditClientOpen] = useState(false);
+    const [isAssignClientOpen, setIsAssignClientOpen] = useState(false);
+
     // Mobile View State: 'doc' or 'console'
     const [mobileView, setMobileView] = useState<'doc' | 'console'>('console');
 
     useEffect(() => {
-        fetchData();
-    }, [id]);
+        if (token) fetchData();
+    }, [id, token]);
 
     // Scroll to bottom of chat when messages change
     useEffect(() => {
@@ -111,10 +120,11 @@ export default function PendingLineDetailPage() {
     const fetchData = async () => {
         setLoading(true);
         try {
+            const headers = { 'Authorization': `Bearer ${token}` };
             const [lineRes, msgRes, docRes] = await Promise.all([
-                fetch(`/api/v1/pending-lines/${id}`),
-                fetch(`/api/v1/pending-lines/${id}/messages`),
-                fetch(`/api/v1/pending-lines/${id}/documents`)
+                fetch(`/api/v1/pending-lines/${id}`, { headers }),
+                fetch(`/api/v1/pending-lines/${id}/messages`, { headers }),
+                fetch(`/api/v1/pending-lines/${id}/documents`, { headers })
             ]);
 
             if (lineRes.ok) setLine(await lineRes.json());
@@ -122,8 +132,6 @@ export default function PendingLineDetailPage() {
             if (docRes.ok) {
                 const docs = (await docRes.json()).documents || [];
                 setDocuments(docs);
-                // If documents exist, default mobile view to doc? Or stick to console?
-                // Let's stick to console as action is primary, but user can switch.
             }
         } catch (err) {
             console.error('Failed to fetch data:', err);
@@ -132,9 +140,29 @@ export default function PendingLineDetailPage() {
         }
     };
 
+    const handleClientUpdated = (updatedClient: any) => {
+        if (line) {
+            setLine({ ...line, client: updatedClient });
+        }
+    };
+
+    const handleClientAssigned = async (client: any) => {
+        // Optimistic update
+        if (line) {
+            setLine({ ...line, client: client });
+        }
+        // Force refresh to get exact server state
+        await fetchData();
+    };
+
     const approveDocument = async (docId: string) => {
         try {
-            const res = await fetch(`/api/v1/documents/${docId}/approve`, { method: 'POST' });
+            const res = await fetch(`/api/v1/documents/${docId}/approve`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                }
+            });
             if (res.ok) {
                 if (window.navigator && window.navigator.vibrate) {
                     window.navigator.vibrate(200);
@@ -154,7 +182,10 @@ export default function PendingLineDetailPage() {
         try {
             const res = await fetch(`/api/v1/pending-lines/${id}/messages`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
                 body: JSON.stringify({
                     message_type: messageType,
                     custom_message: customMessage || undefined,
@@ -200,27 +231,72 @@ export default function PendingLineDetailPage() {
 
     return (
         <div className="h-screen bg-[#F9F8F6] text-[#1A1A1A] font-sans selection:bg-[#4F2830]/20 flex flex-col overflow-hidden">
+            {/* Modals */}
+            <EditClientModal
+                isOpen={isEditClientOpen}
+                onClose={() => setIsEditClientOpen(false)}
+                client={line?.client as any}
+                onUpdated={handleClientUpdated}
+            />
+            {user?.cabinet_id && (
+                <AssignClientModal
+                    isOpen={isAssignClientOpen}
+                    onClose={() => setIsAssignClientOpen(false)}
+                    pendingLineId={id}
+                    currentClientId={line?.client?.id}
+                    onAssigned={handleClientAssigned}
+                    userCabinetId={user.cabinet_id}
+                />
+            )}
+
             {/* Navbar */}
             <nav className="shrink-0 bg-[#F9F8F6] border-b border-[#1A1A1A]/5 px-4 md:px-8 h-16 flex items-center justify-between z-50">
                 <div className="flex items-center gap-4 md:gap-6">
                     <Link href="/dashboard" className="p-2 -ml-2 text-[#1A1A1A]/40 hover:text-[#1A1A1A] transition-colors rounded-lg hover:bg-[#1A1A1A]/5">
                         <ArrowLeft size={20} />
                     </Link>
-                    <div className="flex items-center gap-2 md:gap-4 truncate">
-                        <span className="text-lg md:text-xl font-serif font-bold tracking-tight truncate">
-                            Dossier #{id.substring(0, 4)}...
-                        </span>
-                        {line && <div className="hidden md:block"><StatusBadge status={line.status} /></div>}
+                    <div>
+                        <div className="flex items-center gap-2">
+                            <span className="text-lg font-serif font-bold tracking-tight">
+                                Dossier #{id.substring(0, 4)}...
+                            </span>
+                            <div className="hidden md:block"><StatusBadge status={line?.status || 'pending'} /></div>
+                        </div>
                     </div>
                 </div>
+
                 <div className="flex items-center gap-3">
-                    <div className="text-right mr-2 hidden md:block">
-                        <div className="text-xs text-[#1A1A1A]/40 font-medium uppercase tracking-wider">Client</div>
-                        <div className="font-serif font-bold">{line?.client?.name || 'Non assigné'}</div>
+                    <div className="text-right mr-2 flex flex-col items-end">
+                        <div className="text-xs text-[#1A1A1A]/40 font-medium uppercase tracking-wider mb-0.5">Client</div>
+
+                        {line?.client ? (
+                            <div className="flex items-center gap-2 group">
+                                <Link
+                                    href={`/clients/${line.client.id}`}
+                                    className="font-serif font-bold group-hover:underline decoration-1 underline-offset-4 cursor-pointer text-[#1A1A1A] hover:text-[#1A1A1A]"
+                                >
+                                    {line.client.name}
+                                </Link>
+                                <button onClick={() => setIsEditClientOpen(true)} className="opacity-0 group-hover:opacity-100 transition-opacity text-[#1A1A1A]/40 hover:text-[#1A1A1A]">
+                                    <Pencil size={12} />
+                                </button>
+                            </div>
+                        ) : (
+                            <button
+                                onClick={() => setIsAssignClientOpen(true)}
+                                className="flex items-center gap-1.5 text-xs font-bold bg-[#1A1A1A] text-white px-3 py-1.5 rounded-lg hover:bg-[#1A1A1A]/80 transition-colors shadow-sm"
+                            >
+                                <UserPlus size={12} /> Assigner
+                            </button>
+                        )}
                     </div>
-                    {line && <div className="md:hidden"><StatusBadge status={line.status} /></div>}
-                    <div className="w-8 h-8 rounded-full bg-[#1A1A1A] text-white flex items-center justify-center font-serif text-sm">
-                        {line?.client?.name?.substring(0, 2).toUpperCase() || 'NA'}
+
+                    <div className="w-8 h-8 rounded-full bg-[#1A1A1A] text-white flex items-center justify-center font-serif text-sm relative border border-white/20 shadow-sm cursor-pointer hover:scale-105 transition-transform" onClick={() => line?.client ? setIsEditClientOpen(true) : setIsAssignClientOpen(true)}>
+                        {line?.client ? (
+                            line.client.name.substring(0, 2).toUpperCase()
+                        ) : (
+                            <User size={14} className="opacity-70" />
+                        )}
                     </div>
                 </div>
             </nav>

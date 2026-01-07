@@ -227,6 +227,10 @@ func (r *PendingLineRepository) GetByID(ctx context.Context, id uuid.UUID) (*mod
 			Name:  *clientName,
 			Phone: clientPhone,
 		}
+	} else if pl.ClientID != nil {
+		// Fallback: If joined client is nil but pl has client_id, log it or minimal struct?
+		// This implies referential integrity failure or race condition.
+		// We do typically want the full client object.
 	}
 
 	return &pl, nil
